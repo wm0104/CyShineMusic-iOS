@@ -277,9 +277,17 @@ void main() {
     );
     final position = tester.state<ScrollableState>(scrollableFinder).position;
 
+    final pageLabel = find.text('1 / 2');
+    expect(
+      find.descendant(of: listFinder, matching: pageLabel),
+      findsOneWidget,
+    );
+    expect(pageLabel.hitTestable(), findsOneWidget);
+
     position.jumpTo(position.maxScrollExtent);
     await tester.pump();
     expect(position.pixels, greaterThan(0));
+    expect(pageLabel.hitTestable(), findsNothing);
 
     container.read(searchToolbarStateProvider).onNext!();
     await _pumpUi(tester);
@@ -331,6 +339,8 @@ void main() {
     expect(container.read(searchControllerProvider).error, 'TX 搜索暂时受限');
     expect(find.text('TX 搜索暂时受限'), findsOneWidget);
     expect(find.byKey(const ValueKey('app-toast-capsule')), findsOneWidget);
+    expect(find.text('重试'), findsNothing);
+    expect(find.text('即刻开始搜索'), findsOneWidget);
 
     controller.startRetry();
     await tester.pump();
@@ -406,7 +416,7 @@ class _ErrorSearchController extends SearchController {
   SearchState build() => const SearchState(source: MusicSource.tx);
 
   void fail(String message) {
-    state = state.copyWith(loading: false, error: message);
+    state = state.copyWith(searchActive: true, loading: false, error: message);
   }
 
   void startRetry() {

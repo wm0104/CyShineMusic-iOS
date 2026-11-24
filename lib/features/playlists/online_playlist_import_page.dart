@@ -7,6 +7,7 @@ import '../../core/api/music_api.dart';
 import '../../core/models/enums.dart';
 import '../../core/models/music_info.dart';
 import '../../core/models/playlist_info.dart';
+import '../../core/sdk/internal/format.dart';
 import '../../core/ui/app_toast.dart';
 import '../../core/ui/car_display_layout.dart';
 import '../shell/shell_bottom_area.dart';
@@ -174,29 +175,26 @@ class _OnlinePlaylistImportPageState
                   final music = track != null
                       ? track.musicInfo
                       : _playlist!.tracks[index];
+                  final durationMs = track?.spotify?.durationMs;
                   return Center(
                     child: ConstrainedBox(
                       constraints: CarDisplayLayout.contentConstraints(
                         context,
                         maxWidth: 760,
                       ),
-                      child: track != null
-                          ? ListTile(
-                              leading: Text('${index + 1}'),
-                              title: Text(track.name),
-                              subtitle: Text(
-                                [
-                                  track.singer,
-                                  track.sourceLabel,
-                                ].where((s) => s.isNotEmpty).join(' · '),
-                              ),
-                              trailing: music == null
+                      child: music == null
+                          ? TrackResultRow(
+                              name: track!.name,
+                              singer: track.singer,
+                              sourceLabel: track.sourceLabel,
+                              interval: durationMs == null
                                   ? null
-                                  : const Icon(Icons.play_arrow_rounded),
-                              onTap: music == null ? null : () => _play(music),
+                                  : formatPlayTime(durationMs / 1000),
                             )
                           : _OnlineTrackTile(
-                              music: music!,
+                              music: music,
+                              displayName: track?.name,
+                              displaySinger: track?.singer,
                               onDownload: () =>
                                   showQualityPickerSheet(context, music),
                               onPlay: () => _play(music),
@@ -523,6 +521,31 @@ class _ParsedPlaylistHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final preview = spotify;
+    final details = [
+      '$count 首',
+      if (creator?.trim().isNotEmpty == true) creator!.trim(),
+    ].join(' · ');
+    final metadata = Text.rich(
+      TextSpan(
+        children: [
+          TextSpan(
+            text: sourceLabel,
+            style: preview == null
+                ? null
+                : const TextStyle(decoration: TextDecoration.underline),
+          ),
+          TextSpan(text: ' · $details'),
+        ],
+      ),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(
+        color: scheme.onPrimaryContainer.withValues(alpha: 0.76),
+        fontSize: 12,
+        fontWeight: FontWeight.w500,
+      ),
+    );
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -552,43 +575,36 @@ class _ParsedPlaylistHeader extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 5),
-                    Text(
-                      [
-                        sourceLabel,
-                        '$count 首',
-                        if (creator?.trim().isNotEmpty == true) creator!.trim(),
-                      ].join(' · '),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: scheme.onPrimaryContainer.withValues(
-                          alpha: 0.76,
+                    if (preview == null)
+                      metadata
+                    else
+                      Tooltip(
+                        message: '在 Spotify 查看歌单',
+                        child: Semantics(
+                          link: true,
+                          child: InkWell(
+                            onTap: () => launchUrl(
+                              Uri.https(
+                                'open.spotify.com',
+                                '/playlist/${preview.id}',
+                              ),
+                              mode: LaunchMode.externalApplication,
+                            ),
+                            child: metadata,
+                          ),
                         ),
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
                       ),
-                    ),
                   ],
                 ),
               ),
             ],
           ),
-          if (spotify case final preview?) ...[
+          if (preview != null) ...[
             const SizedBox(height: 8),
             Text('${preview.matched} 首已匹配音源 · ${count - preview.matched} 首未匹配'),
             if (!preview.hasMatchingPlatforms && count > 0)
               const Text('启用音源及对应的搜索平台后，可以再次导入以匹配歌曲。'),
             if (!preview.complete) Text(_spotifyCountMessage(preview)),
-            Align(
-              alignment: AlignmentDirectional.centerStart,
-              child: TextButton(
-                onPressed: () => launchUrl(
-                  Uri.https('open.spotify.com', '/playlist/${preview.id}'),
-                  mode: LaunchMode.externalApplication,
-                ),
-                child: const Text('在 Spotify 查看歌单'),
-              ),
-            ),
           ],
           const SizedBox(height: 13),
           FilledButton.icon(
@@ -649,11 +665,15 @@ class _OnlineTrackTile extends ConsumerWidget {
     required this.music,
     required this.onDownload,
     required this.onPlay,
+    this.displayName,
+    this.displaySinger,
   });
 
   final MusicInfo music;
   final VoidCallback onDownload;
   final VoidCallback onPlay;
+  final String? displayName;
+  final String? displaySinger;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -664,6 +684,8 @@ class _OnlineTrackTile extends ConsumerWidget {
     );
     return SearchResultTile(
       music: music,
+      displayName: displayName,
+      displaySinger: displaySinger,
       onDownload: onDownload,
       onPlay: onPlay,
       downloadTask: task,

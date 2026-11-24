@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart' hide SearchController;
 import 'package:flutter/material.dart' as material show SearchController;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -80,9 +81,9 @@ class _SearchPageState extends ConsumerState<SearchPage> {
     // ignore the result if a newer keystroke has started another tip lookup.
     final request = Object();
     _tipRequest = request;
+    final state = ref.read(searchControllerProvider);
     try {
       final api = ref.read(musicApiProvider);
-      final state = ref.read(searchControllerProvider);
       final source = _sourceForSearchRequest(state);
       if (state.category == SearchCategory.artists &&
           !MusicApi.artistSources.contains(source)) {
@@ -121,7 +122,10 @@ class _SearchPageState extends ConsumerState<SearchPage> {
           .toList(growable: false);
       _lastSuggestionWidgets = items;
       return items;
+    } on DioException {
+      return _lastSuggestionWidgets;
     } catch (_) {
+      if (state.category == SearchCategory.songs) rethrow;
       return _lastSuggestionWidgets;
     }
   }
@@ -210,28 +214,15 @@ class _SearchPageState extends ConsumerState<SearchPage> {
             ),
             if (state.isSearchActive) ...[
               const SourceFilterChips(),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 3, 12, 2),
-                child: Row(
-                  children: [
-                    const SizedBox(width: 108, child: SearchCategoryChips()),
-                    const SizedBox(width: 8),
-                    if (state.response case final response?)
-                      Expanded(
-                        child: _ResultsSummary(
-                          visibleCount: state.resultCount,
-                          reportedTotal: response.total,
-                          page: state.page,
-                          allPage: response.allPage,
-                          loading: state.loading,
-                          unit: state.category == SearchCategory.artists
-                              ? '位'
-                              : '首',
-                        ),
-                      ),
-                  ],
+              const SizedBox(height: 4),
+              if (state.resultCount == 0)
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 12),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: SizedBox(width: 108, child: SearchCategoryChips()),
+                  ),
                 ),
-              ),
               Expanded(
                 child: _ResultsArea(
                   state: state,
@@ -345,7 +336,8 @@ class _SearchPageState extends ConsumerState<SearchPage> {
   void _handleSearchStateChanged(SearchState? previous, SearchState next) {
     if (!mounted) return;
     if (previous?.category != next.category ||
-        previous?.source != next.source) {
+        (next.category == SearchCategory.artists &&
+            previous?.source != next.source)) {
       _tipRequest = null;
       _lastSuggestionWidgets = const [];
     }
@@ -721,13 +713,16 @@ class _SearchPreludePainter extends CustomPainter {
 }
 
 class _SearchLoadingStatus extends StatelessWidget {
-  const _SearchLoadingStatus();
+  const _SearchLoadingStatus({this.artistSource});
+  final MusicSource? artistSource;
 
   @override
   Widget build(BuildContext context) {
-    return const ExpressiveLoadingStatus(
+    return ExpressiveLoadingStatus(
       title: '正在搜索',
-      subtitle: '正在聚合多个音乐平台的结果',
+      subtitle: artistSource == null
+          ? '正在聚合多个音乐平台的结果'
+          : '正在搜索${artistSource!.label}的歌手',
     );
   }
 }
@@ -807,7 +802,7 @@ class _CenterStatus extends StatelessWidget {
   }
 }
 
-class _ResultsArea extends ConsumerWidget {
+class _ResultsArea extends StatelessWidget {
   const _ResultsArea({
     required this.state,
     required this.scrollController,
@@ -823,7 +818,7 @@ class _ResultsArea extends ConsumerWidget {
   final ValueChanged<MusicInfo> onAddToPlaylist;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final artists = state.category == SearchCategory.artists;
     if (artists && !MusicApi.artistSources.contains(state.source)) {
       return _CenterStatus(
@@ -834,19 +829,8 @@ class _ResultsArea extends ConsumerWidget {
         compact: true,
       );
     }
-    if (state.error != null && state.response == null) {
-      return Center(
-        child: TextButton.icon(
-          icon: const Icon(Icons.refresh_rounded),
-          label: const Text('重试'),
-          onPressed: () => ref
-              .read(searchControllerProvider.notifier)
-              .search(keyword: state.keyword, page: state.page),
-        ),
-      );
-    }
     if (state.loading && state.response == null) {
-      return const _SearchLoadingStatus();
+      return _SearchLoadingStatus(artistSource: artists ? state.source : null);
     }
     final response = state.response;
     if (response == null) {
@@ -865,7 +849,9 @@ class _ResultsArea extends ConsumerWidget {
       );
     }
     return ListView.separated(
-      key: PageStorageKey('search-results-${state.category.name}'),
+      key: artists
+          ? const PageStorageKey('artist-results-scroll')
+          : const PageStorageKey('search-results-scroll'),
       controller: scrollController,
       padding: EdgeInsets.fromLTRB(
         12,
@@ -873,11 +859,30 @@ class _ResultsArea extends ConsumerWidget {
         12,
         ShellBottomArea.contentPadding(context, 156),
       ),
-      itemCount: state.resultCount,
-      separatorBuilder: (_, _) => const _SearchResultDivider(),
+      itemCount: state.resultCount + 1,
+      separatorBuilder: (_, index) =>
+          index == 0 ? const SizedBox(height: 2) : const _SearchResultDivider(),
       itemBuilder: (_, index) {
-        if (artists) return _ArtistTile(artist: response.artists[index]);
-        final music = response.list[index];
+        if (index == 0) {
+          return Row(
+            children: [
+              const SizedBox(width: 108, child: SearchCategoryChips()),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _ResultsSummary(
+                  visibleCount: state.resultCount,
+                  reportedTotal: response.total,
+                  page: state.page,
+                  allPage: response.allPage,
+                  loading: state.loading,
+                  unit: artists ? '位' : '首',
+                ),
+              ),
+            ],
+          );
+        }
+        if (artists) return _ArtistTile(artist: response.artists[index - 1]);
+        final music = response.list[index - 1];
         return _ResultTile(
           music: music,
           onTapItem: onTapItem,

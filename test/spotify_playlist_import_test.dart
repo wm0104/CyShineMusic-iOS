@@ -1,12 +1,18 @@
 import 'dart:convert';
 
+import 'package:cy_shine_music/core/models/download_capabilities.dart';
 import 'package:cy_shine_music/core/models/enums.dart';
 import 'package:cy_shine_music/core/models/music_info.dart';
+import 'package:cy_shine_music/core/music_sources/music_source_controller.dart';
 import 'package:cy_shine_music/core/storage/settings_store.dart';
+import 'package:cy_shine_music/core/ui/expressive_download_button.dart';
+import 'package:cy_shine_music/features/downloads/download_progress.dart';
 import 'package:cy_shine_music/features/playlists/online_playlist_import_page.dart';
 import 'package:cy_shine_music/features/playlists/playlist_models.dart';
 import 'package:cy_shine_music/features/playlists/playlist_store.dart';
 import 'package:cy_shine_music/features/playlists/spotify_playlist_import.dart';
+import 'package:cy_shine_music/features/search/widgets/quality_picker_sheet.dart';
+import 'package:cy_shine_music/features/search/widgets/search_result_tile.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -320,6 +326,97 @@ void main() {
         refreshed.onlineTrackIds,
         refreshed.tracks.map((track) => track.identityKey),
       );
+    },
+  );
+
+  testWidgets(
+    'preview uses the import track row and only enables matched songs',
+    (tester) async {
+      final candidate = _candidate('SONG A', singer: 'Singer、Guest');
+      final container = ProviderContainer(
+        overrides: [
+          spotifyPlaylistImporterProvider.overrideWithValue(
+            _importer(
+              [_track('Song A', artist: 'Singer, Guest'), _track('Missing')],
+              total: 2,
+              search: (_, _) async => [candidate],
+            ),
+          ),
+          downloadCapabilitiesProvider.overrideWithValue(
+            const AsyncData(
+              DownloadCapabilities(
+                sources: {
+                  MusicSource.wy: [Quality.k128],
+                },
+                availableSources: [MusicSource.wy],
+              ),
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: const MaterialApp(home: OnlinePlaylistImportPage()),
+        ),
+      );
+      await tester.enterText(find.byType(TextField), _link.toString());
+      await tester.tap(find.text('解析歌单'));
+      await tester.pumpAndSettle();
+
+      final sourceLink = find.byTooltip('在 Spotify 查看歌单');
+      expect(
+        find.descendant(
+          of: sourceLink,
+          matching: find.text('Spotify · 2 首 · Creator'),
+        ),
+        findsOneWidget,
+      );
+      final matched = find.widgetWithText(TrackResultRow, 'Song A');
+      final missing = find.widgetWithText(TrackResultRow, 'Missing');
+      expect(tester.getSize(matched).height, tester.getSize(missing).height);
+      expect(find.text('Singer, Guest · Match album'), findsOneWidget);
+      expect(
+        find.descendant(of: missing, matching: find.text('未匹配音源')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: missing, matching: find.text('03:20')),
+        findsOneWidget,
+      );
+      expect(tester.widget<TrackResultRow>(matched).onPlay, isNotNull);
+      expect(tester.widget<TrackResultRow>(missing).onPlay, isNull);
+      expect(
+        find.descendant(
+          of: missing,
+          matching: find.byType(ExpressiveDownloadButton),
+        ),
+        findsNothing,
+      );
+
+      final download = find.descendant(
+        of: matched,
+        matching: find.byType(ExpressiveDownloadButton),
+      );
+      await tester.ensureVisible(download);
+      await tester.tap(download);
+      await tester.pumpAndSettle();
+      final picker = find.byType(QualityPickerSheet);
+      expect(tester.widget<QualityPickerSheet>(picker).music.id, candidate.id);
+      Navigator.of(tester.element(picker)).pop();
+      await tester.pumpAndSettle();
+
+      final progress = container.read(downloadProgressProvider.notifier);
+      final taskId = progress.start(candidate);
+      progress.updateBytes(taskId, 50, 100);
+      await tester.pump();
+      final button = tester.widget<ExpressiveDownloadButton>(download);
+      expect(button.progress, 0.5);
+      expect(button.onPressed, isNull);
+      progress.finish(taskId, 'saved.flac');
+      await tester.pumpAndSettle();
+      expect(tester.widget<ExpressiveDownloadButton>(download).isDone, isTrue);
     },
   );
 

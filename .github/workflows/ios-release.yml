@@ -70,7 +70,13 @@ jobs:
           SOURCE_SHA: ${{ steps.version.outputs.sha }}
         run: |
           set -euo pipefail
-          git show -s --format=%B "$SOURCE_SHA" > "$RUNNER_TEMP/release-notes"
+          # A version can contain several commits before its first successful build.
+          base=$(git describe --tags --first-parent --abbrev=0 --match 'ios-v[0-9]*' "$SOURCE_SHA^" 2>/dev/null || true)
+          if [[ -z "$base" ]]; then
+            bump=$(git log --first-parent -1 --format=%H "$SOURCE_SHA" -- tool/ios_version.txt)
+            base=$(git rev-parse --verify -q "$bump^" || true)
+          fi
+          git log --reverse --first-parent --format=%B "${base:+$base..}$SOURCE_SHA" > "$RUNNER_TEMP/release-notes"
           latest=true
           newest=$(git tag --list 'ios-v[0-9]*' --sort=-version:refname | head -n1)
           if [[ -n "$newest" && "$(printf '%s\n' "$newest" "$TAG" | sort -V | tail -n1)" != "$TAG" ]]; then

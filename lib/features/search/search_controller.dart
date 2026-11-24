@@ -180,7 +180,12 @@ class SearchController extends Notifier<SearchState> {
     if (source != MusicSource.all && !enabled.contains(source)) return;
     if (!_canSearch(source)) return;
     if (source == state.source) return;
-    state = state.copyWith(source: source);
+    state = state.copyWith(
+      source: source,
+      response: state.category == SearchCategory.artists
+          ? null
+          : state.response,
+    );
     if (state.keyword.trim().isNotEmpty) {
       search(keyword: state.keyword, source: source, page: 1);
     }
@@ -265,9 +270,6 @@ class SearchController extends Notifier<SearchState> {
       loading: false,
       error: null,
       searchActive: true,
-      response: query.category == SearchCategory.artists
-          ? null
-          : state.response,
     );
 
     final cached = _responseCache[query];
