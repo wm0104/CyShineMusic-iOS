@@ -28,7 +28,7 @@ env:
 jobs:
   build-ios:
     name: Build iOS
-    runs-on: macos-latest
+    runs-on: macos-15-intel
     timeout-minutes: 60
 
     steps:
