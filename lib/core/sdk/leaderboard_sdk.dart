@@ -192,7 +192,7 @@ class LeaderboardSdk {
     final info = data['data'] as Map? ?? const {};
     final songs = (data['songInfoList'] as List? ?? const []).whereType<Map>();
     final tracks = songs
-        .map(_parseTxTrack)
+        .map(parseTxTrack)
         .whereType<MusicInfo>()
         .toList(growable: false);
     return PlaylistInfo(
@@ -208,7 +208,7 @@ class LeaderboardSdk {
     );
   }
 
-  static MusicInfo? _parseTxTrack(Map item) {
+  static MusicInfo? parseTxTrack(Map item) {
     final file = item['file'];
     final songMid = item['mid'];
     final mediaMid = file is Map ? file['media_mid'] : null;

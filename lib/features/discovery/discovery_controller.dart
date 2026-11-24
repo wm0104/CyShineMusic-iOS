@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/api/music_api.dart';
+import '../../core/models/artist_info.dart';
 import '../../core/models/enums.dart';
 import '../../core/models/leaderboard_info.dart';
 import '../../core/models/music_info.dart';
@@ -109,10 +110,58 @@ class OnlinePlaylistKey {
   int get hashCode => Object.hash(source, id, kind, maxTracks);
 }
 
+typedef ArtistPageKey = ({MusicSource source, String id, int offset});
+
+final artistTrackPageProvider =
+    FutureProvider.family<ArtistTrackPage, ArtistPageKey>((ref, key) {
+      return ref
+          .watch(musicApiProvider)
+          .artistSongs(
+            artistId: key.id,
+            source: key.source,
+            offset: key.offset,
+            limit: onlinePlaylistDetailTrackPageSize,
+          );
+    });
+
 final onlinePlaylistDetailProvider =
     FutureProvider.family<PlaylistInfo, OnlinePlaylistKey>((ref, key) {
       final api = ref.watch(musicApiProvider);
       return switch (key.kind) {
+        OnlineCollectionKind.artist =>
+          Future.wait([
+            for (
+              int offset = 0;
+              offset < (key.maxTracks ?? onlinePlaylistDetailInitialTrackLimit);
+              offset += onlinePlaylistDetailTrackPageSize
+            )
+              ref.watch(
+                artistTrackPageProvider((
+                  source: key.source,
+                  id: key.id,
+                  offset: offset,
+                )).future,
+              ),
+          ]).then((pages) {
+            final seen = <String>{};
+            final tracks = [
+              for (final page in pages)
+                for (final track in page.tracks)
+                  if (seen.add(track.id)) track,
+            ];
+            final last = pages.last;
+            final exhausted =
+                last.tracks.isEmpty ||
+                last.offset + onlinePlaylistDetailTrackPageSize >= last.total;
+            return PlaylistInfo(
+              id: key.id,
+              source: key.source,
+              name: pages.first.artistName ?? '歌手详情',
+              coverUrl: pages.first.coverUrl,
+              tracks: tracks,
+              trackCount: exhausted ? tracks.length : last.total,
+            );
+          }),
         OnlineCollectionKind.playlist => api.parsePlaylist(
           input: key.id,
           source: key.source,

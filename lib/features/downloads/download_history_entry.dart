@@ -24,9 +24,11 @@ class DownloadHistoryEntry {
     this.picUrl,
     this.sizeBytes,
     this.musicJson,
+    this.preservePlaylistPosition = false,
   });
 
   final String id;
+  final bool preservePlaylistPosition;
   final String musicId;
   final String name;
   final String singer;
@@ -74,6 +76,7 @@ class DownloadHistoryEntry {
       picUrl: json['picUrl'] as String?,
       sizeBytes: json['sizeBytes'] as int?,
       musicJson: _mapOrNull(json['musicInfo']),
+      preservePlaylistPosition: json['preservePlaylistPosition'] == true,
     );
   }
 
@@ -92,6 +95,7 @@ class DownloadHistoryEntry {
     if (picUrl != null) 'picUrl': picUrl,
     if (sizeBytes != null) 'sizeBytes': sizeBytes,
     if (musicJson != null) 'musicInfo': musicJson,
+    if (preservePlaylistPosition) 'preservePlaylistPosition': true,
   };
 }
 

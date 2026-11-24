@@ -1,0 +1,80 @@
+name: iOS Release
+
+on:
+  workflow_run:
+    workflows: ['iOS Build (unsigned IPA)']
+    branches: [ios]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: ios-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ios-release-source
+          path: dist
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Select version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha=$(cat dist/source-commit.txt)
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          git merge-base --is-ancestor "$sha" origin/ios || exit 0
+          version=$(git show "$sha:tool/ios_version.txt" | tr -d '[:space:]')
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          tag="ios-v$version"
+          if git rev-parse --verify -q "refs/tags/$tag" >/dev/null; then
+            [[ "$(git rev-parse "$tag^{commit}")" == "$sha" ]] || exit 0
+            if gh release view "$tag" >/dev/null 2>&1; then exit 0; fi
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        if: steps.version.outputs.tag != ''
+        with:
+          name: CyShineMusic-unsigned-ipa
+          path: dist
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Publish IPA
+        if: steps.version.outputs.tag != ''
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          SOURCE_SHA: ${{ steps.version.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git show -s --format=%B "$SOURCE_SHA" > "$RUNNER_TEMP/release-notes"
+          latest=true
+          newest=$(git tag --list 'ios-v[0-9]*' --sort=-version:refname | head -n1)
+          if [[ -n "$newest" && "$(printf '%s\n' "$newest" "$TAG" | sort -V | tail -n1)" != "$TAG" ]]; then
+            latest=false
+          fi
+          gh release create "$TAG" dist/CyShineMusic-unsigned.ipa --target "$SOURCE_SHA" \
+            --title "${TAG#ios-v}" --notes-file "$RUNNER_TEMP/release-notes" --latest="$latest"

@@ -1,4 +1,5 @@
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:pub_semver/pub_semver.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -7,7 +8,6 @@ import '../api/dio_factory.dart';
 import '../storage/settings_store.dart';
 
 const _githubApiBaseUrl = 'https://api.github.com';
-const _latestReleasePath = '/repos/KevinllBin/CyShineMusic/releases/latest';
 
 class AppRelease {
   const AppRelease({
@@ -29,7 +29,12 @@ class AppUpdateService {
   final Dio _dio;
 
   Future<AppRelease?> fetchLatestRelease() async {
-    final response = await _dio.get<Object?>(_latestReleasePath);
+    final repository = defaultTargetPlatform == TargetPlatform.iOS
+        ? 'wm0104/CyShineMusic-iOS'
+        : 'KevinllBin/CyShineMusic';
+    final response = await _dio.get<Object?>(
+      '/repos/$repository/releases/latest',
+    );
     final data = response.data;
     if (data is! Map) {
       throw const FormatException('GitHub release response is not an object');
@@ -40,7 +45,7 @@ class AppUpdateService {
     final pageValue = data['html_url']?.toString().trim() ?? '';
     final version = parseAppVersion(tagName);
     final pageUri = Uri.tryParse(pageValue);
-    if (version == null || !_isGithubReleaseUri(pageUri)) {
+    if (version == null || !_isGithubReleaseUri(pageUri, repository)) {
       throw const FormatException('GitHub release fields are invalid');
     }
 
@@ -70,11 +75,11 @@ final externalUriLauncherProvider = Provider<ExternalUriLauncher>((ref) {
 });
 
 Version? parseAppVersion(String value) {
-  var normalized = value.trim();
-  if (normalized.startsWith('v') || normalized.startsWith('V')) {
-    normalized = normalized.substring(1);
-  }
-  normalized = normalized.split('+').first;
+  final normalized = value
+      .trim()
+      .replaceFirst(RegExp(r'^(?:ios-)?v', caseSensitive: false), '')
+      .split('+')
+      .first;
   if (normalized.isEmpty) return null;
   try {
     return Version.parse(normalized);
@@ -103,16 +108,16 @@ Dio _createGithubDio({NetworkAdapterMode? adapterMode}) {
       headers: const {
         'Accept': 'application/vnd.github+json',
         'X-GitHub-Api-Version': '2022-11-28',
-        'User-Agent': 'CyShineMusic-Android',
+        'User-Agent': 'CyShineMusic',
       },
     ),
     adapterMode: adapterMode,
   );
 }
 
-bool _isGithubReleaseUri(Uri? uri) {
+bool _isGithubReleaseUri(Uri? uri, String repository) {
   if (uri == null || uri.scheme != 'https' || uri.host != 'github.com') {
     return false;
   }
-  return uri.path.startsWith('/KevinllBin/CyShineMusic/releases/');
+  return uri.path.startsWith('/$repository/releases/');
 }

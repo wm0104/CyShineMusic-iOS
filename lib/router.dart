@@ -101,6 +101,30 @@ GoRouter createAppRouter({
                     },
                   ),
                   GoRoute(
+                    path: '/discover/artists/:source/:id',
+                    pageBuilder: (context, state) {
+                      final source = MusicSource.fromCode(
+                        state.pathParameters['source'] ?? '',
+                      );
+                      return _containerTransformPage(
+                        context,
+                        key: state.pageKey,
+                        extra: state.extra,
+                        child: _shellPageContent(
+                          state,
+                          child: OnlinePlaylistDetailPage(
+                            source: source,
+                            playlistId: state.pathParameters['id'] ?? '',
+                            kind: OnlineCollectionKind.artist,
+                            summary: _routePayload<PlaylistSummary>(
+                              state.extra,
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                  GoRoute(
                     path: '/discover/leaderboards/:source',
                     pageBuilder: (context, state) {
                       final source = MusicSource.tryFromCode(

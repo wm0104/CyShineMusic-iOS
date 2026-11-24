@@ -4,6 +4,8 @@ import 'dart:io';
 
 import 'package:audio_service/audio_service.dart';
 import 'package:bass_player/bass_player.dart' as bass;
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -19,6 +21,7 @@ import 'package:cy_shine_music/core/music_sources/music_url_resolver.dart';
 import 'package:cy_shine_music/core/services/app_logger.dart';
 import 'package:cy_shine_music/core/storage/settings_store.dart';
 import 'package:cy_shine_music/features/player/player_audio_handler.dart';
+import 'package:cy_shine_music/features/player/live_activity_service.dart';
 import 'package:cy_shine_music/features/player/player_controller.dart';
 import 'package:cy_shine_music/features/downloads/download_history_entry.dart';
 import 'package:cy_shine_music/features/player/player_session_snapshot.dart';
@@ -117,6 +120,72 @@ void main() {
     );
     expect(item?.artHeaders, containsPair('Referer', 'https://music.163.com/'));
     expect(item?.artHeaders, contains('User-Agent'));
+  });
+
+  test('Live Activity survives remote track changes until playback stops', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    const channel = MethodChannel('cy_shine_music/live_activity');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method != 'isSupported') calls.add(call);
+      return call.method == 'end' ? null : true;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+
+    final harness = await _Harness.create(loadFailures: 0);
+    addTearDown(harness.dispose);
+    await harness.container.read(liveActivityProvider).initialize();
+    harness.container.read(liveActivitySyncProvider);
+    await harness.controller.playFromMusic(_music());
+    await Future<void>.delayed(Duration.zero);
+    expect(calls, isEmpty);
+
+    final playing = PlaybackState(
+      processingState: AudioProcessingState.ready,
+      playing: true,
+      updatePosition: const Duration(seconds: 17),
+    );
+    harness.audio.playbackState.add(playing);
+    await _waitUntil(() => calls.isNotEmpty);
+    expect(calls.single.method, 'start');
+    expect(calls.single.arguments, containsPair('title', 'Test Song'));
+    expect(calls.single.arguments, containsPair('playing', true));
+
+    harness.audio.playbackState.add(playing.copyWith(playing: false));
+    await _waitUntil(() => calls.length == 2);
+    expect(calls.last.method, 'update');
+    expect(calls.last.arguments, containsPair('playing', false));
+
+    // ActivityKit can update the current activity in the background, but
+    // cannot start its replacement while the next remote track is loading.
+    final loadGate = Completer<void>();
+    harness.audio.loadGate = loadGate;
+    final switching = harness.controller.playFromMusic(_neteaseMusic());
+    await _waitUntil(() => harness.audio.loadedUris.length == 2);
+    final transition = harness.container.read(playerControllerProvider);
+    expect(transition.track, isNull);
+    expect(transition.loading, isTrue);
+    harness.audio.playbackState.add(
+      PlaybackState(processingState: AudioProcessingState.loading),
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(calls.map((call) => call.method), ['start', 'update']);
+
+    loadGate.complete();
+    await switching;
+    harness.audio.playbackState.add(playing);
+    await _waitUntil(
+      () => calls.last.arguments is Map &&
+          calls.last.arguments['title'] == 'NetEase Song' &&
+          calls.last.arguments['playing'] == true,
+    );
+    expect(calls.skip(1).map((call) => call.method), everyElement('update'));
+
+    harness.audio.playbackState.add(PlaybackState());
+    await _waitUntil(() => calls.last.method == 'end');
   });
 
   test('all source load failures publish only the final error state', () async {
@@ -477,6 +546,33 @@ void main() {
     },
   );
 
+  test(
+    'playlist keeps both occurrences of the same downloaded Spotify track',
+    () async {
+      final harness = await _Harness.create(loadFailures: 0);
+      addTearDown(harness.dispose);
+      final directory = await Directory.systemTemp.createTemp(
+        'cyshine-repeat-track-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final file = await File('${directory.path}/same.mp3').writeAsBytes([0]);
+      final original = _localEntry('same', file.path).toJson();
+      final entries = [
+        DownloadHistoryEntry.fromJson(original),
+        for (var position = 0; position < 2; position++)
+          DownloadHistoryEntry.fromJson({
+            ...original,
+            'id': 'row-$position',
+            'preservePlaylistPosition': true,
+          }),
+      ];
+      await harness.controller.playFromPlaylistQueue(entries.last, entries);
+      final state = harness.container.read(playerControllerProvider);
+      expect(state.queue.map((entry) => entry.id), ['same', 'row-0', 'row-1']);
+      expect(state.queueIndex, 2);
+    },
+  );
+
   test('playlist queue expands without restarting the active track', () async {
     final harness = await _Harness.create(loadFailures: 0);
     addTearDown(harness.dispose);
@@ -679,6 +775,13 @@ class _FakeAudioHandler extends PlayerAudioHandler {
 
   @override
   bass.BassProcessingState get processingState => _processingState;
+
+  @override
+  void publishQueue(List<MediaItem> items, {int? currentIndex}) {
+    // The test transport drives playbackState directly, without a BASS engine.
+    queue.add(items);
+    playbackState.add(playbackState.value.copyWith(queueIndex: currentIndex));
+  }
 
   @override
   Future<void> beginTrackTransition({

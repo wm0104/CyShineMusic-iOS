@@ -24,12 +24,16 @@ class ShellPageFrame extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final area = ShellBottomArea.maybeOf(context);
-    final bottomInset = MediaQuery.viewPaddingOf(context).bottom;
+    // On iOS the capsule has its own SafeArea. Let the list paint under
+    // the home indicator; its trailing padding keeps the last row tappable.
+    final capsulePadding = Theme.of(context).platform == TargetPlatform.iOS
+        ? 0.0
+        : math.max(MediaQuery.viewPaddingOf(context).bottom, 12.0);
     final bottomPadding = area?.navigationMode == AppNavigationMode.native
         ? area!.extent > 0
               ? area.extent - area.floatingExtent
               : MediaQuery.paddingOf(context).bottom
-        : math.max(bottomInset, 12.0);
+        : capsulePadding;
     final hidesHeader =
         isDiscoveryLocation(location) ||
         isImmersivePlaylistDetailLocation(location);

@@ -5,12 +5,12 @@
 > 本分支（`ios`）把它移植到了 iOS：11 个 Android-only 原生的 MethodChannel 全部 1:1 复刻，
 > Dart 业务层几乎原样复用。
 >
-> **⬇️ 下载已构建好的未签名 IPA：[Releases → 最新版](https://github.com/chenweitian423/CyShineMusic-iOS/releases/latest)**
+> **⬇️ 下载已构建好的未签名 IPA：[Releases → 最新版](https://github.com/wm0104/CyShineMusic-iOS/releases/latest)**
 >
 > 安装：下载 IPA → 用 **AltStore / SideStore** 侧载（免费证书 7 天有效）→
 > 设置 → 通用 → VPN与设备管理 信任证书。
 >
-> **要求 iOS 16.2+**（实时活动 API 的下限）。iOS 版本号**独立编号**（当前 `2.0.0`，
+> **要求 iOS 16.2+**（实时活动 API 的下限）。iOS 版本号**独立编号**（见 [iOS 版本文件](tool/ios_version.txt)，
 > 与上游 Android 的 1.0.8 无关），每次出包的构建号都会递增。
 >
 > 已支持**灵动岛 / 锁屏实时活动 / 桌面小组件**。两个使用前提：

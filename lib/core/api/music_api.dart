@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../models/artist_info.dart';
 import '../models/enums.dart';
 import '../models/leaderboard_info.dart';
 import '../models/lyric_info.dart';
@@ -8,10 +9,12 @@ import '../models/music_info.dart';
 import '../models/playlist_info.dart';
 import '../models/playlist_summary.dart';
 import '../models/search_response.dart';
+import '../sdk/extra_artist_sdk.dart';
 import '../sdk/leaderboard_sdk.dart';
 import '../sdk/music_sdk.dart' as sdk;
 import '../sdk/playlist_catalog_sdk.dart';
 import '../sdk/playlist_sdk.dart';
+import '../sdk/wy_artist_sdk.dart';
 import '../storage/settings_store.dart';
 
 class MusicApi {
@@ -25,6 +28,50 @@ class MusicApi {
 
   final Set<MusicSource> _enabledSearchSources;
   final List<MusicSource> _searchSourceOrder;
+
+  static Set<MusicSource> get artistSources => {
+    MusicSource.wy,
+    ...ExtraArtistSdk.sources,
+  };
+
+  Future<SearchResponse> searchArtists({
+    required String keyword,
+    required MusicSource source,
+    int page = 1,
+    int limit = 30,
+  }) {
+    if (!_enabledSearchSources.contains(source) ||
+        !artistSources.contains(source)) {
+      throw StateError('当前平台未启用歌手搜索');
+    }
+    return source == MusicSource.wy
+        ? WyArtistSdk.search(keyword: keyword, page: page, limit: limit)
+        : ExtraArtistSdk.search(
+            keyword: keyword,
+            source: source,
+            page: page,
+            limit: limit,
+          );
+  }
+
+  Future<ArtistTrackPage> artistSongs({
+    required String artistId,
+    required MusicSource source,
+    required int offset,
+    required int limit,
+  }) {
+    if (!artistSources.contains(source)) {
+      throw StateError('当前平台不支持歌手歌曲');
+    }
+    return source == MusicSource.wy
+        ? WyArtistSdk.songs(artistId: artistId, offset: offset, limit: limit)
+        : ExtraArtistSdk.songs(
+            artistId: artistId,
+            source: source,
+            offset: offset,
+            limit: limit,
+          );
+  }
 
   // Local: hits each music platform directly. There is no CancelToken here —
   // the aggregator and 5 platform SDKs don't thread it through to SdkHttp, so

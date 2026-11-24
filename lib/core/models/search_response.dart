@@ -1,9 +1,11 @@
+import 'artist_info.dart';
 import 'enums.dart';
 import 'music_info.dart';
 
 class SearchResponse {
   const SearchResponse({
     required this.list,
+    this.artists = const [],
     required this.page,
     required this.limit,
     required this.allPage,
@@ -12,6 +14,7 @@ class SearchResponse {
   });
 
   final List<MusicInfo> list;
+  final List<ArtistInfo> artists;
   final int page;
   final int limit;
   final int allPage;

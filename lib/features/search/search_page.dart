@@ -1,15 +1,20 @@
 import 'dart:async';
 import 'dart:math' as math;
 
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart' hide SearchController;
 import 'package:flutter/material.dart' as material show SearchController;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../core/api/music_api.dart';
 import '../shell/shell_bottom_area.dart';
 import '../../core/debug/debug_paint_guard.dart';
 import '../../core/models/enums.dart';
+import '../../core/models/artist_info.dart';
+import '../../core/models/online_collection_kind.dart';
+import '../../core/models/playlist_summary.dart';
+import '../../core/ui/container_transform.dart';
+import '../discovery/widgets/discovery_playlist_cover.dart';
 import '../../core/models/music_info.dart';
 import '../../core/storage/settings_store.dart';
 import '../../core/ui/app_toast.dart';
@@ -21,7 +26,6 @@ import '../music_sources/music_source_action_guard.dart';
 import '../player/player_controller.dart';
 import '../playlists/playlist_browser_sheet.dart';
 import '../playlists/playlist_models.dart';
-import '../playlists/playlist_store.dart';
 import '../shell/widgets/shell_header.dart';
 import 'search_controller.dart';
 import 'search_toolbar_state.dart';
@@ -78,10 +82,19 @@ class _SearchPageState extends ConsumerState<SearchPage> {
     _tipRequest = request;
     try {
       final api = ref.read(musicApiProvider);
-      final tips = await api.searchTip(
-        keyword: query,
-        source: _sourceForSearchRequest(ref.read(searchControllerProvider)),
-      );
+      final state = ref.read(searchControllerProvider);
+      final source = _sourceForSearchRequest(state);
+      if (state.category == SearchCategory.artists &&
+          !MusicApi.artistSources.contains(source)) {
+        return const [];
+      }
+      final tips = state.category == SearchCategory.artists
+          ? (await api.searchArtists(
+              keyword: query,
+              source: source,
+              limit: 8,
+            )).artists.map((a) => a.name)
+          : await api.searchTip(keyword: query, source: source);
       if (!identical(request, _tipRequest) || query != controller.text.trim()) {
         return _lastSuggestionWidgets;
       }
@@ -108,7 +121,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
           .toList(growable: false);
       _lastSuggestionWidgets = items;
       return items;
-    } on DioException {
+    } catch (_) {
       return _lastSuggestionWidgets;
     }
   }
@@ -132,9 +145,8 @@ class _SearchPageState extends ConsumerState<SearchPage> {
     _dismissTransientRoutes();
     _releaseSearchFocus();
 
-    final requestedSource = _sourceForSearchRequest(
-      ref.read(searchControllerProvider),
-    );
+    final startState = ref.read(searchControllerProvider);
+    final requestedSource = _sourceForSearchRequest(startState);
     await ref
         .read(searchControllerProvider.notifier)
         .search(keyword: query, source: requestedSource, page: page);
@@ -147,6 +159,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
         completedState.error == null &&
         completedState.keyword == query &&
         completedState.source == requestedSource &&
+        completedState.category == startState.category &&
         completedState.page == page &&
         response?.page == page;
     if (!requestStillMatches) return;
@@ -197,14 +210,36 @@ class _SearchPageState extends ConsumerState<SearchPage> {
             ),
             if (state.isSearchActive) ...[
               const SourceFilterChips(),
-              const SizedBox(height: 4),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 3, 12, 2),
+                child: Row(
+                  children: [
+                    const SizedBox(width: 108, child: SearchCategoryChips()),
+                    const SizedBox(width: 8),
+                    if (state.response case final response?)
+                      Expanded(
+                        child: _ResultsSummary(
+                          visibleCount: state.resultCount,
+                          reportedTotal: response.total,
+                          page: state.page,
+                          allPage: response.allPage,
+                          loading: state.loading,
+                          unit: state.category == SearchCategory.artists
+                              ? '位'
+                              : '首',
+                        ),
+                      ),
+                  ],
+                ),
+              ),
               Expanded(
                 child: _ResultsArea(
                   state: state,
                   scrollController: _resultsScrollController,
                   onTapItem: _openPicker,
                   onPlayItem: _play,
-                  onAddToPlaylist: _selectPlaylistForMusic,
+                  onAddToPlaylist: (music) =>
+                      addMusicToChosenPlaylist(context, ref, music),
                 ),
               ),
             ] else
@@ -245,37 +280,6 @@ class _SearchPageState extends ConsumerState<SearchPage> {
         .playFromPlaylistQueue(entry, queue);
   }
 
-  Future<void> _selectPlaylistForMusic(MusicInfo music) async {
-    final destination = await showPlaylistBrowserSheet(
-      context,
-      mode: PlaylistBrowserMode.addSongs,
-    );
-    if (!mounted || destination == null) return;
-
-    const prefix = '/playlists/';
-    if (!destination.startsWith(prefix)) return;
-    final playlistId = destination.substring(prefix.length);
-    final store = ref.read(localPlaylistsProvider.notifier);
-    final playlist = store.byId(playlistId);
-    if (playlist == null) {
-      showAppToast(context, '歌单不存在或已被删除', type: AppToastType.warning);
-      return;
-    }
-
-    try {
-      final added = await store.addMusic(playlistId, music);
-      if (!mounted) return;
-      showAppToast(
-        context,
-        added == 0 ? '歌曲已在「${playlist.name}」中' : '已添加到「${playlist.name}」',
-        type: added == 0 ? AppToastType.info : AppToastType.success,
-      );
-    } catch (error) {
-      if (!mounted) return;
-      showAppToast(context, '添加到歌单失败：$error', type: AppToastType.error);
-    }
-  }
-
   void _returnToDiscovery() {
     _controller.clear();
     if (_controller.isAttached && _controller.isOpen) {
@@ -294,7 +298,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
       return;
     }
     final response = state.response;
-    final hasResults = response != null && response.list.isNotEmpty;
+    final hasResults = state.resultCount > 0;
     final allPage = response?.allPage ?? state.page;
     final canNext =
         hasResults && state.page < (allPage > 0 ? allPage : state.page + 1);
@@ -340,6 +344,11 @@ class _SearchPageState extends ConsumerState<SearchPage> {
 
   void _handleSearchStateChanged(SearchState? previous, SearchState next) {
     if (!mounted) return;
+    if (previous?.category != next.category ||
+        previous?.source != next.source) {
+      _tipRequest = null;
+      _lastSuggestionWidgets = const [];
+    }
     if (next.error != null && next.error != previous?.error) {
       _dismissSearchErrorToast();
       _searchErrorToast = showAppToast(
@@ -798,7 +807,7 @@ class _CenterStatus extends StatelessWidget {
   }
 }
 
-class _ResultsArea extends StatelessWidget {
+class _ResultsArea extends ConsumerWidget {
   const _ResultsArea({
     required this.state,
     required this.scrollController,
@@ -814,7 +823,28 @@ class _ResultsArea extends StatelessWidget {
   final ValueChanged<MusicInfo> onAddToPlaylist;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final artists = state.category == SearchCategory.artists;
+    if (artists && !MusicApi.artistSources.contains(state.source)) {
+      return _CenterStatus(
+        icon: Icons.manage_search_rounded,
+        title: '尚未启用歌手搜索平台',
+        subtitle:
+            '可在设置中启用${MusicApi.artistSources.map((s) => s.label).join('、')}',
+        compact: true,
+      );
+    }
+    if (state.error != null && state.response == null) {
+      return Center(
+        child: TextButton.icon(
+          icon: const Icon(Icons.refresh_rounded),
+          label: const Text('重试'),
+          onPressed: () => ref
+              .read(searchControllerProvider.notifier)
+              .search(keyword: state.keyword, page: state.page),
+        ),
+      );
+    }
     if (state.loading && state.response == null) {
       return const _SearchLoadingStatus();
     }
@@ -826,7 +856,7 @@ class _ResultsArea extends StatelessWidget {
         subtitle: '输入歌名、歌手或专辑，发现可播放与下载的版本',
       );
     }
-    if (response.list.isEmpty) {
+    if (state.resultCount == 0) {
       return const _CenterStatus(
         icon: Icons.manage_search_rounded,
         title: '没有找到结果',
@@ -835,7 +865,7 @@ class _ResultsArea extends StatelessWidget {
       );
     }
     return ListView.separated(
-      key: const PageStorageKey('search-results-scroll'),
+      key: PageStorageKey('search-results-${state.category.name}'),
       controller: scrollController,
       padding: EdgeInsets.fromLTRB(
         12,
@@ -843,20 +873,11 @@ class _ResultsArea extends StatelessWidget {
         12,
         ShellBottomArea.contentPadding(context, 156),
       ),
-      itemCount: response.list.length + 1,
-      separatorBuilder: (_, index) =>
-          index == 0 ? const SizedBox(height: 2) : const _SearchResultDivider(),
+      itemCount: state.resultCount,
+      separatorBuilder: (_, _) => const _SearchResultDivider(),
       itemBuilder: (_, index) {
-        if (index == 0) {
-          return _ResultsSummary(
-            visibleCount: response.list.length,
-            reportedTotal: response.total,
-            page: state.page,
-            allPage: response.allPage,
-            loading: state.loading,
-          );
-        }
-        final music = response.list[index - 1];
+        if (artists) return _ArtistTile(artist: response.artists[index]);
+        final music = response.list[index];
         return _ResultTile(
           music: music,
           onTapItem: onTapItem,
@@ -864,6 +885,67 @@ class _ResultsArea extends StatelessWidget {
           onAddToPlaylist: onAddToPlaylist,
         );
       },
+    );
+  }
+}
+
+class _ArtistTile extends StatelessWidget {
+  const _ArtistTile({required this.artist});
+  final ArtistInfo artist;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return ListTile(
+      key: ValueKey('artist-${artist.source.code}-${artist.id}'),
+      minTileHeight: 62,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+      horizontalTitleGap: 8,
+      leading: Hero(
+        tag: onlinePlaylistArtworkHeroTag(
+          artist.source,
+          artist.id,
+          kind: OnlineCollectionKind.artist,
+        ),
+        createRectTween: containerTransformHeroRectTween,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: SizedBox.square(
+            dimension: 44,
+            child: DiscoveryPlaylistCover(url: artist.coverUrl, size: 44),
+          ),
+        ),
+      ),
+      title: Text(
+        artist.name,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          fontSize: 14,
+          fontWeight: FontWeight.w600,
+          color: scheme.onSurface,
+        ),
+      ),
+      subtitle: Text(
+        artist.source.label,
+        style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+      ),
+      trailing: const Icon(Icons.chevron_right_rounded),
+      onTap: () => context.push(
+        '/discover/artists/${artist.source.code}/${Uri.encodeComponent(artist.id)}',
+        extra: ContainerTransformExtra(
+          PlaylistSummary(
+            id: artist.id,
+            name: artist.name,
+            source: artist.source,
+            coverUrl: artist.coverUrl,
+          ),
+          origin: ContainerTransformOrigin.capture(
+            context,
+            color: scheme.surface,
+          ),
+        ),
+      ),
     );
   }
 }
@@ -887,6 +969,7 @@ class _SearchResultDivider extends StatelessWidget {
 class _ResultsSummary extends StatelessWidget {
   const _ResultsSummary({
     required this.visibleCount,
+    required this.unit,
     required this.reportedTotal,
     required this.page,
     required this.allPage,
@@ -894,6 +977,7 @@ class _ResultsSummary extends StatelessWidget {
   });
 
   final int visibleCount;
+  final String unit;
   final int reportedTotal;
   final int page;
   final int allPage;
@@ -903,8 +987,8 @@ class _ResultsSummary extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final countLabel = reportedTotal > 0
-        ? '$reportedTotal 首'
-        : '本页 $visibleCount 首';
+        ? '$reportedTotal $unit'
+        : '本页 $visibleCount $unit';
     final normalizedAllPage = allPage < page ? page : allPage;
     final pageLabel = normalizedAllPage > 1
         ? '$page / $normalizedAllPage'

@@ -108,6 +108,18 @@ function checkImports(src, file) {
 const failures = [];
 const stats = { files: 0, privates: 0, calls: 0 };
 
+const bass = stripNoise(readFileSync(
+  join(root, 'packages/bass_player/ios/Classes/BassPlayerPlugin.swift'), 'utf8',
+));
+const initOutput = bass.indexOf('BASS_Init(');
+const sessionConfig = /BASS_SetConfig\(\s*UInt32\(BASS_CONFIG_IOS_SESSION\),\s*UInt32\(BASS_IOS_SESSION_DISABLE\)\s*\)/.exec(bass);
+if (!sessionConfig || sessionConfig.index >= initOutput) {
+  failures.push('BASS_Init 前须保留 audio_session 配置的混音策略，避免系统播放器失去资格。');
+}
+if (!/BASS_ChannelPlay\(stream,\s*0\)/.test(bass)) {
+  failures.push('BASS 从暂停位置恢复时必须传 restart=false。');
+}
+
 const files = readdirSync(runnerDir).filter((f) => f.endsWith('.swift')).sort();
 console.log('Runner Swift 调用点检查');
 console.log(`  目录: ios/Runner（${files.length} 个 .swift）`);
@@ -120,6 +132,9 @@ for (const file of files) {
   }
   const src = stripNoise(raw);
   stats.files++;
+  if (/\.nowPlayingInfo\s*=(?!=)/.test(src)) {
+    failures.push(`${file} 重复写入了 audio_service 负责发布的系统播放信息。`);
+  }
 
   // 0) 用了类型但没 import 对应模块
   checkImports(src, file);

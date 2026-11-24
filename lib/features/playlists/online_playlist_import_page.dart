@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/api/music_api.dart';
 import '../../core/models/enums.dart';
@@ -16,6 +17,7 @@ import '../search/widgets/quality_picker_sheet.dart';
 import '../search/widgets/search_result_tile.dart';
 import 'playlist_cover_image.dart';
 import 'playlist_store.dart';
+import 'spotify_playlist_import.dart';
 import '../shell/shell_navigation.dart';
 
 class _OnlinePlaylistDraft {
@@ -23,11 +25,13 @@ class _OnlinePlaylistDraft {
     this.input = '',
     this.source = MusicSource.all,
     this.playlist,
+    this.spotify,
   });
 
   final String input;
   final MusicSource source;
   final PlaylistInfo? playlist;
+  final SpotifyPlaylistPreview? spotify;
 }
 
 final _onlinePlaylistDraftProvider = StateProvider<_OnlinePlaylistDraft>(
@@ -47,6 +51,8 @@ class _OnlinePlaylistImportPageState
   final TextEditingController _inputController = TextEditingController();
   MusicSource _source = MusicSource.all;
   PlaylistInfo? _playlist;
+  SpotifyPlaylistPreview? _spotify;
+  String? _progress;
   String? _error;
   bool _loading = false;
   bool _saving = false;
@@ -59,6 +65,7 @@ class _OnlinePlaylistImportPageState
     _inputController.text = draft.input;
     _source = draft.source;
     _playlist = draft.playlist;
+    _spotify = draft.spotify;
   }
 
   @override
@@ -70,6 +77,7 @@ class _OnlinePlaylistImportPageState
 
   @override
   Widget build(BuildContext context) {
+    final spotify = _spotify;
     return Scaffold(
       body: CustomScrollView(
         physics: const BouncingScrollPhysics(
@@ -93,6 +101,7 @@ class _OnlinePlaylistImportPageState
                       setState(() {
                         _source = source;
                         _playlist = null;
+                        _spotify = null;
                         _error = null;
                       });
                       _rememberDraft(playlist: null);
@@ -106,16 +115,16 @@ class _OnlinePlaylistImportPageState
             ),
           ),
           if (_loading)
-            const SliverFillRemaining(
+            SliverFillRemaining(
               hasScrollBody: false,
-              child: _ImportLoading(),
+              child: _ImportLoading(message: _progress),
             )
           else if (_error != null)
             SliverFillRemaining(
               hasScrollBody: false,
               child: _ImportError(message: _error!, onRetry: _parse),
             )
-          else if (_playlist == null)
+          else if (_playlist == null && spotify == null)
             const SliverFillRemaining(
               hasScrollBody: false,
               child: _ImportIdle(),
@@ -131,7 +140,18 @@ class _OnlinePlaylistImportPageState
                       maxWidth: 760,
                     ),
                     child: _ParsedPlaylistHeader(
-                      playlist: _playlist!,
+                      name: spotify?.name ?? _playlist!.name,
+                      coverUrl: spotify != null
+                          ? spotify.coverUrl
+                          : _playlist!.coverUrl,
+                      creator: spotify != null
+                          ? spotify.creator
+                          : _playlist!.creator,
+                      sourceLabel: spotify != null
+                          ? 'Spotify'
+                          : _playlist!.source.label,
+                      count: spotify?.tracks.length ?? _playlist!.tracks.length,
+                      spotify: spotify,
                       saving: _saving,
                       onSave: _savePlaylist,
                     ),
@@ -147,22 +167,40 @@ class _OnlinePlaylistImportPageState
                 ShellBottomArea.contentPadding(context, 120),
               ),
               sliver: SliverList.separated(
-                itemCount: _playlist!.tracks.length,
+                itemCount: spotify?.tracks.length ?? _playlist!.tracks.length,
                 separatorBuilder: (_, _) => const SizedBox(height: 8),
                 itemBuilder: (context, index) {
-                  final music = _playlist!.tracks[index];
+                  final track = spotify?.tracks[index];
+                  final music = track != null
+                      ? track.musicInfo
+                      : _playlist!.tracks[index];
                   return Center(
                     child: ConstrainedBox(
                       constraints: CarDisplayLayout.contentConstraints(
                         context,
                         maxWidth: 760,
                       ),
-                      child: _OnlineTrackTile(
-                        music: music,
-                        onDownload: () =>
-                            showQualityPickerSheet(context, music),
-                        onPlay: () => _play(music),
-                      ),
+                      child: track != null
+                          ? ListTile(
+                              leading: Text('${index + 1}'),
+                              title: Text(track.name),
+                              subtitle: Text(
+                                [
+                                  track.singer,
+                                  track.sourceLabel,
+                                ].where((s) => s.isNotEmpty).join(' · '),
+                              ),
+                              trailing: music == null
+                                  ? null
+                                  : const Icon(Icons.play_arrow_rounded),
+                              onTap: music == null ? null : () => _play(music),
+                            )
+                          : _OnlineTrackTile(
+                              music: music!,
+                              onDownload: () =>
+                                  showQualityPickerSheet(context, music),
+                              onPlay: () => _play(music),
+                            ),
                     ),
                   );
                 },
@@ -186,10 +224,33 @@ class _OnlinePlaylistImportPageState
     setState(() {
       _loading = true;
       _playlist = null;
+      _spotify = null;
+      _progress = null;
       _error = null;
     });
     _rememberDraft(playlist: null);
     try {
+      final link = spotifyShareLink(input);
+      if (link != null) {
+        final spotify = await ref
+            .read(spotifyPlaylistImporterProvider)
+            .read(
+              link,
+              cancelled: () => !mounted || !identical(_requestToken, request),
+              onProgress: (done, total) {
+                if (mounted && identical(_requestToken, request)) {
+                  setState(() => _progress = '正在匹配音源 · $done / $total');
+                }
+              },
+            );
+        if (!mounted || !identical(_requestToken, request)) return;
+        setState(() {
+          _loading = false;
+          _spotify = spotify;
+        });
+        _rememberDraft();
+        return;
+      }
       final playlist = await ref
           .read(musicApiProvider)
           .parsePlaylist(input: input, source: _source);
@@ -211,12 +272,35 @@ class _OnlinePlaylistImportPageState
 
   Future<void> _savePlaylist() async {
     final playlist = _playlist;
-    if (playlist == null || _saving) return;
-    setState(() => _saving = true);
+    final spotify = _spotify;
+    if ((playlist == null && spotify == null) || _saving) return;
     try {
-      final local = await ref
-          .read(localPlaylistsProvider.notifier)
-          .importOnline(playlist);
+      if (spotify != null && !spotify.complete) {
+        final accepted = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('保存当前可见曲目？'),
+            content: Text(_spotifyCountMessage(spotify)),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: Text('仅保存这 ${spotify.tracks.length} 首'),
+              ),
+            ],
+          ),
+        );
+        if (!mounted) return;
+        if (accepted != true) return;
+      }
+      setState(() => _saving = true);
+      final store = ref.read(localPlaylistsProvider.notifier);
+      final local = spotify != null
+          ? await store.importSpotify(spotify)
+          : await store.importOnline(playlist!);
       if (!mounted) return;
       showAppToast(context, '歌单已保存到本地', type: AppToastType.success);
       ref.read(_onlinePlaylistDraftProvider.notifier).state =
@@ -247,6 +331,7 @@ class _OnlinePlaylistImportPageState
     _requestToken = null;
     _inputController.clear();
     setState(() {
+      _spotify = null;
       _playlist = null;
       _error = null;
     });
@@ -255,8 +340,9 @@ class _OnlinePlaylistImportPageState
   }
 
   void _handleInputChanged(String _) {
-    if (_playlist != null || _error != null) {
+    if (_playlist != null || _spotify != null || _error != null) {
       setState(() {
+        _spotify = null;
         _playlist = null;
         _error = null;
       });
@@ -271,6 +357,7 @@ class _OnlinePlaylistImportPageState
       input: _inputController.text,
       source: _source,
       playlist: playlist ?? _playlist,
+      spotify: _spotify,
     );
   }
 }
@@ -384,7 +471,7 @@ class _ImportForm extends StatelessWidget {
             minLines: 1,
             decoration: InputDecoration(
               labelText: '歌单链接或 ID',
-              hintText: 'https://music.163.com/playlist?id=...',
+              hintText: '粘贴 Spotify 或其他平台的歌单链接',
               prefixIcon: const Icon(Icons.link_rounded),
               suffixIcon: IconButton(
                 tooltip: '清空',
@@ -414,12 +501,22 @@ class _ImportForm extends StatelessWidget {
 
 class _ParsedPlaylistHeader extends StatelessWidget {
   const _ParsedPlaylistHeader({
-    required this.playlist,
+    required this.name,
+    required this.coverUrl,
+    required this.creator,
+    required this.sourceLabel,
+    required this.count,
+    this.spotify,
     required this.saving,
     required this.onSave,
   });
 
-  final PlaylistInfo playlist;
+  final String name;
+  final String? coverUrl;
+  final String? creator;
+  final String sourceLabel;
+  final int count;
+  final SpotifyPlaylistPreview? spotify;
   final bool saving;
   final VoidCallback onSave;
 
@@ -437,14 +534,14 @@ class _ParsedPlaylistHeader extends StatelessWidget {
         children: [
           Row(
             children: [
-              _OnlinePlaylistCover(url: playlist.coverUrl),
+              _OnlinePlaylistCover(url: coverUrl),
               const SizedBox(width: 14),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      playlist.name,
+                      name,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
@@ -457,10 +554,9 @@ class _ParsedPlaylistHeader extends StatelessWidget {
                     const SizedBox(height: 5),
                     Text(
                       [
-                        playlist.source.label,
-                        '${playlist.tracks.length} 首',
-                        if (playlist.creator?.trim().isNotEmpty == true)
-                          playlist.creator!.trim(),
+                        sourceLabel,
+                        '$count 首',
+                        if (creator?.trim().isNotEmpty == true) creator!.trim(),
                       ].join(' · '),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
@@ -477,6 +573,23 @@ class _ParsedPlaylistHeader extends StatelessWidget {
               ),
             ],
           ),
+          if (spotify case final preview?) ...[
+            const SizedBox(height: 8),
+            Text('${preview.matched} 首已匹配音源 · ${count - preview.matched} 首未匹配'),
+            if (!preview.hasMatchingPlatforms && count > 0)
+              const Text('启用音源及对应的搜索平台后，可以再次导入以匹配歌曲。'),
+            if (!preview.complete) Text(_spotifyCountMessage(preview)),
+            Align(
+              alignment: AlignmentDirectional.centerStart,
+              child: TextButton(
+                onPressed: () => launchUrl(
+                  Uri.https('open.spotify.com', '/playlist/${preview.id}'),
+                  mode: LaunchMode.externalApplication,
+                ),
+                child: const Text('在 Spotify 查看歌单'),
+              ),
+            ),
+          ],
           const SizedBox(height: 13),
           FilledButton.icon(
             onPressed: saving ? null : onSave,
@@ -492,6 +605,15 @@ class _ParsedPlaylistHeader extends StatelessWidget {
       ),
     );
   }
+}
+
+String _spotifyCountMessage(SpotifyPlaylistPreview preview) {
+  final count = preview.tracks.length;
+  final total = preview.total;
+  if (total == null || total < count) {
+    return 'Spotify 预览提供了 $count 首，无法核实歌单总数。';
+  }
+  return '原歌单共 $total 首，Spotify 预览仅提供 $count 首。';
 }
 
 class _OnlinePlaylistCover extends StatelessWidget {
@@ -550,7 +672,9 @@ class _OnlineTrackTile extends ConsumerWidget {
 }
 
 class _ImportLoading extends StatelessWidget {
-  const _ImportLoading();
+  const _ImportLoading({this.message});
+
+  final String? message;
 
   @override
   Widget build(BuildContext context) {
@@ -565,7 +689,7 @@ class _ImportLoading extends StatelessWidget {
           CircularProgressIndicator(color: scheme.primary),
           const SizedBox(height: 16),
           Text(
-            '正在读取歌单',
+            message ?? '正在读取歌单',
             style: TextStyle(
               color: scheme.onSurface,
               fontSize: 16,

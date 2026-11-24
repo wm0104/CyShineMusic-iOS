@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:cy_shine_music/core/services/app_update_service.dart';
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pub_semver/pub_semver.dart';
 
@@ -10,6 +11,17 @@ void main() {
     test('accepts a v-prefixed semantic version', () {
       expect(parseAppVersion('v1.2.3'), Version(1, 2, 3));
       expect(parseAppVersion('V2.0.0'), Version(2, 0, 0));
+    });
+
+    test('compares iOS release tags with installed package versions', () {
+      expect(
+        isNewerAppVersion(currentVersion: '2.0.6', latestVersion: 'ios-v2.0.7'),
+        isTrue,
+      );
+      expect(
+        isNewerAppVersion(currentVersion: '2.0.7', latestVersion: 'ios-v2.0.7'),
+        isFalse,
+      );
     });
 
     test('compares semantic components instead of version text', () {
@@ -49,6 +61,43 @@ void main() {
   });
 
   group('AppUpdateService', () {
+    group('on iOS', () {
+      const repository = 'wm0104/CyShineMusic-iOS';
+      const tag = 'ios-v2.0.7';
+      setUp(() => debugDefaultTargetPlatformOverride = TargetPlatform.iOS);
+      tearDown(() => debugDefaultTargetPlatformOverride = null);
+
+      test('checks the port and opens its matching release', () async {
+        const page = 'https://github.com/$repository/releases/tag/$tag';
+        final dio = _dioReturning({
+          'tag_name': tag,
+          'html_url': page,
+        }, repository: repository);
+        addTearDown(dio.close);
+
+        final release = await AppUpdateService(dio: dio).fetchLatestRelease();
+        expect(release!.version, Version(2, 0, 7));
+        expect(release.pageUri, Uri.parse(page));
+      });
+
+      test(
+        'rejects a release link pointing at the Android repository',
+        () async {
+          final dio = _dioReturning({
+            'tag_name': tag,
+            'html_url':
+                'https://github.com/KevinllBin/CyShineMusic/releases/tag/$tag',
+          }, repository: repository);
+          addTearDown(dio.close);
+
+          await expectLater(
+            AppUpdateService(dio: dio).fetchLatestRelease(),
+            throwsA(isA<FormatException>()),
+          );
+        },
+      );
+    });
+
     test('parses a valid latest release response', () async {
       final dio = _dioReturning({
         'tag_name': 'v1.10.0',
@@ -127,15 +176,19 @@ void main() {
   });
 }
 
-Dio _dioReturning(Object? responseData) {
+Dio _dioReturning(
+  Object? responseData, {
+  String repository = 'KevinllBin/CyShineMusic',
+}) {
   return Dio(BaseOptions(baseUrl: 'https://api.github.com'))
-    ..httpClientAdapter = _FakeAdapter(responseData);
+    ..httpClientAdapter = _FakeAdapter(responseData, repository);
 }
 
 class _FakeAdapter implements HttpClientAdapter {
-  _FakeAdapter(this.responseData);
+  _FakeAdapter(this.responseData, this.repository);
 
   final Object? responseData;
+  final String repository;
 
   @override
   Future<ResponseBody> fetch(
@@ -145,9 +198,7 @@ class _FakeAdapter implements HttpClientAdapter {
   ) async {
     expect(
       options.uri,
-      Uri.parse(
-        'https://api.github.com/repos/KevinllBin/CyShineMusic/releases/latest',
-      ),
+      Uri.parse('https://api.github.com/repos/$repository/releases/latest'),
     );
     return ResponseBody.fromString(
       jsonEncode(responseData),
