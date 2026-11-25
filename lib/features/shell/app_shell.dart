@@ -20,6 +20,7 @@ import 'player_pull_scope.dart';
 import 'player_transition.dart';
 import 'shell_bottom_area.dart';
 import 'shell_edge_back.dart';
+import 'shell_navigation.dart';
 import 'shell_route_utils.dart';
 import 'shell_toolbar_visibility.dart';
 import 'tab_location_memory.dart';
@@ -176,7 +177,8 @@ class _AppShellState extends ConsumerState<AppShell>
             _pull.value = 0;
             _animateToolbarTo(1);
           }
-        } else if (_settleTarget != 0) {
+        } else if (_settleTarget != 0 &&
+            !isPlaybackArtistLocation(widget.location)) {
           _playerReturnLocation = normalizedPlayerReturnLocation(
             widget.location,
             _playerReturnLocation,
@@ -272,8 +274,13 @@ class _AppShellState extends ConsumerState<AppShell>
     // The transparent route keeps the origin alive. Activate the controls
     // immediately instead of waiting through the spring's subpixel tail.
     if (widget.location != '/player') {
-      _playerReturnLocation = widget.routeLocation;
-      unawaited(context.push<void>('/player', extra: _playerReturnLocation));
+      if (!isPlaybackArtistLocation(widget.location)) {
+        _playerReturnLocation = widget.routeLocation;
+      }
+      openPlayerRoute(
+        GoRouter.of(context),
+        returnLocation: _playerReturnLocation,
+      );
     }
     try {
       await _animatePullTo(1, velocityDy: velocityDy).orCancel;
@@ -301,10 +308,12 @@ class _AppShellState extends ConsumerState<AppShell>
       _settledExpanded = false;
     });
     _transition.capture();
-    // Remove the transparent route and its modal barrier before animating,
-    // so the next pointer can scroll/click the live page immediately.
     if (widget.location == '/player') {
-      if (destination == null && GoRouter.of(context).canPop()) {
+      if (destination != null && isPlaybackArtistLocation(destination)) {
+        // Artist pages go above the player and leave the source tab intact.
+        unawaited(context.push<void>(destination));
+      } else if (destination == null && GoRouter.of(context).canPop()) {
+        // Release the modal barrier while the shell runs the visual tail.
         context.pop();
       } else {
         context.go(destination ?? _playerReturnLocation);
@@ -342,7 +351,7 @@ class _AppShellState extends ConsumerState<AppShell>
   void _rememberTabLocation() {
     final location = widget.location;
     final routeLocation = widget.routeLocation;
-    if (location == '/player') return;
+    if (location == '/player' || isPlaybackArtistLocation(location)) return;
     final index = toolbarIndexFor(location);
     if (index == 2) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -419,6 +428,8 @@ class _AppShellState extends ConsumerState<AppShell>
       context.go('/settings');
     } else if (context.canPop()) {
       context.pop();
+    } else if (isPlaybackArtistLocation(widget.location)) {
+      context.go('/songs');
     } else if (isDiscoveryLocation(widget.location) && widget.location != '/') {
       context.go('/');
     } else if (isPlaylistLocation(widget.location)) {
@@ -576,6 +587,11 @@ class _AppShellState extends ConsumerState<AppShell>
   @override
   Widget build(BuildContext context) {
     final contentLocation = _contentLocation;
+    // The three-tab bars keep the underlying tab selected because they have
+    // no player destination of their own.
+    final tabLocation = isPlaybackArtistLocation(widget.location)
+        ? Uri.parse(_playerReturnLocation).path
+        : contentLocation;
     final contentRoute = widget.location == '/player'
         ? _playerReturnLocation
         : widget.routeLocation;
@@ -765,7 +781,7 @@ class _AppShellState extends ConsumerState<AppShell>
                       child: switch (navigationMode) {
                         AppNavigationMode.dualCapsule =>
                           DualCapsuleBottomNavigation(
-                            location: contentLocation,
+                            location: tabLocation,
                             routeLocation: contentRoute,
                             showPlayer: showPlayerBar,
                             visible: shellControlsVisible,
@@ -773,7 +789,7 @@ class _AppShellState extends ConsumerState<AppShell>
                             isPlayer: isPlayer,
                           ),
                         AppNavigationMode.native => NativeBottomNavigation(
-                          location: contentLocation,
+                          location: tabLocation,
                           routeLocation: contentRoute,
                           showPlayer: showPlayerBar,
                           visible: shellControlsVisible,

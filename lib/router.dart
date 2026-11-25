@@ -102,48 +102,9 @@ GoRouter createAppRouter({
                     },
                   ),
                   GoRoute(
-                    path: '/discover/track-artists',
-                    pageBuilder: (context, state) => _fadeThroughPage(
-                      context,
-                      key: state.pageKey,
-                      extra: state.extra,
-                      child: _shellPageContent(state, child: const PlayerArtistsPage()),
-                    ),
-                  ),
-                  GoRoute(
                     path: '/discover/artists/:source/:id',
-                    pageBuilder: (context, state) {
-                      final source = MusicSource.fromCode(
-                        state.pathParameters['source'] ?? '',
-                      );
-                      final from = state.uri.queryParameters['from'];
-                      final VoidCallback? onBack = switch (from) {
-                        'player' => () => returnToPlayerFromArtists(context),
-                        'track-artists' => () => context.go('/discover/track-artists'),
-                        _ => null,
-                      };
-                      final detail = OnlinePlaylistDetailPage(
-                        source: source,
-                        playlistId: state.pathParameters['id'] ?? '',
-                        kind: OnlineCollectionKind.artist,
-                        summary: _routePayload<PlaylistSummary>(state.extra),
-                        onBack: onBack,
-                        fromPlayback: onBack != null,
-                      );
-                      return _containerTransformPage(
-                        context,
-                        key: state.pageKey,
-                        extra: state.extra,
-                        child: _shellPageContent(
-                          state,
-                          child: onBack == null ? detail : ArtistNavigationBack(
-                            location: state.uri.path,
-                            onBack: onBack,
-                            child: detail,
-                          ),
-                        ),
-                      );
-                    },
+                    pageBuilder: (context, state) =>
+                        _artistDetailPage(context, state),
                   ),
                   GoRoute(
                     path: '/discover/leaderboards/:source',
@@ -329,9 +290,48 @@ GoRouter createAppRouter({
               child: const _PlayerRouteBackdrop(),
             ),
           ),
+          GoRoute(
+            path: '/player/track-artists',
+            pageBuilder: (context, state) => _fadeThroughPage(
+              context,
+              key: state.pageKey,
+              extra: state.extra,
+              skipExit: _leavesPlaybackArtistStack,
+              child: _shellPageContent(state, child: const PlayerArtistsPage()),
+            ),
+          ),
+          GoRoute(
+            path: '/player/artists/:source/:id',
+            pageBuilder: (context, state) =>
+                _artistDetailPage(context, state, fromPlayback: true),
+          ),
         ],
       ),
     ],
+  );
+}
+
+Page<void> _artistDetailPage(
+  BuildContext context,
+  GoRouterState state, {
+  bool fromPlayback = false,
+}) {
+  return _containerTransformPage(
+    context,
+    key: state.pageKey,
+    extra: state.extra,
+    skipExit: fromPlayback ? _leavesPlaybackArtistStack : _leavesDiscovery,
+    child: _shellPageContent(
+      state,
+      child: OnlinePlaylistDetailPage(
+        source: MusicSource.fromCode(state.pathParameters['source'] ?? ''),
+        playlistId: state.pathParameters['id'] ?? '',
+        kind: OnlineCollectionKind.artist,
+        summary: _routePayload<PlaylistSummary>(state.extra),
+        onBack: fromPlayback ? () => closePlaybackArtistPage(context) : null,
+        fromPlayback: fromPlayback,
+      ),
+    ),
   );
 }
 
@@ -367,6 +367,7 @@ CustomTransitionPage<void> _containerTransformPage(
   required LocalKey key,
   required Object? extra,
   required Widget child,
+  bool Function(BuildContext) skipExit = _leavesDiscovery,
 }) {
   final reduceMotion = MediaQuery.disableAnimationsOf(context);
   final origin = extra is ContainerTransformExtra ? extra.origin : null;
@@ -378,7 +379,7 @@ CustomTransitionPage<void> _containerTransformPage(
     reverseTransitionDuration: reduceMotion ? Duration.zero : AppMotion.medium,
     transitionsBuilder: (_, animation, _, child) => SkippableExitTransition(
       animation: animation,
-      skipExit: _leavesDiscovery,
+      skipExit: skipExit,
       child: ContainerTransformTransition(
         animation: animation,
         origin: origin,
@@ -397,6 +398,7 @@ CustomTransitionPage<void> _fadeThroughPage(
   required LocalKey key,
   required Object? extra,
   required Widget child,
+  bool Function(BuildContext) skipExit = _leavesDiscovery,
 }) {
   final reduceMotion = MediaQuery.disableAnimationsOf(context);
   return CustomTransitionPage<void>(
@@ -409,7 +411,7 @@ CustomTransitionPage<void> _fadeThroughPage(
       final eased = animation.drive(CurveTween(curve: AppMotion.emphasized));
       return SkippableExitTransition(
         animation: animation,
-        skipExit: _leavesDiscovery,
+        skipExit: skipExit,
         child: FadeTransition(
           opacity: eased,
           child: SlideTransition(
@@ -431,6 +433,11 @@ CustomTransitionPage<void> _fadeThroughPage(
 bool _leavesDiscovery(BuildContext context) {
   final location = GoRouter.of(context).routerDelegate.currentConfiguration;
   return !isDiscoveryLocation(location.uri.path);
+}
+
+bool _leavesPlaybackArtistStack(BuildContext context) {
+  final location = GoRouter.of(context).routeInformationProvider.value.uri.path;
+  return location != '/player' && !isPlaybackArtistLocation(location);
 }
 
 /// 路由 extra 既可能是裸的业务对象，也可能包在 [ContainerTransformExtra] 里。

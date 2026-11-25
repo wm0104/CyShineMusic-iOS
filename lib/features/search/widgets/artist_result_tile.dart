@@ -12,14 +12,14 @@ import '../../discovery/widgets/discovery_playlist_cover.dart';
 
 /// The same artist row is used by search and the current-track artist list.
 class ArtistResultTile extends ConsumerWidget {
-  const ArtistResultTile({super.key, required this.artist, this.from});
+  const ArtistResultTile({super.key, required this.artist, this.fromPlayback = false});
   final ArtistInfo artist;
-  final String? from;
+  final bool fromPlayback;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final scheme = Theme.of(context).colorScheme;
-    final coverUrl = from == 'track-artists'
+    final coverUrl = fromPlayback
         ? CoverImageSource.normalizeArtistUrl(artist.coverUrl) ??
             ref.watch(artistArtworkProvider((source: artist.source, id: artist.id,
               name: artist.name.trim())))
@@ -46,8 +46,8 @@ class ArtistResultTile extends ConsumerWidget {
         style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant)),
       trailing: const Icon(Icons.chevron_right_rounded),
       onTap: () => context.push(
-        '/discover/artists/${artist.source.code}/${Uri.encodeComponent(artist.id)}'
-        '${from == null ? '' : '?from=${Uri.encodeQueryComponent(from!)}'}',
+        '${fromPlayback ? '/player' : '/discover'}/artists/'
+        '${artist.source.code}/${Uri.encodeComponent(artist.id)}',
         extra: ContainerTransformExtra(
           PlaylistSummary(id: artist.id, name: artist.name, source: artist.source,
             coverUrl: coverUrl),

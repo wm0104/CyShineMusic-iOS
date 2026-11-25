@@ -164,6 +164,19 @@ class _ToolbarPagerState extends State<_ToolbarPager>
   }
 
   @override
+  void didUpdateWidget(covariant _ToolbarPager oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.location != oldWidget.location &&
+        isPlaybackArtistLocation(widget.location)) {
+      // Show the Playback destination even when the mini player was visible.
+      _page = 0;
+      _dragSign = 0;
+      _lastDragDelta = 0;
+      _switch.value = 0;
+    }
+  }
+
+  @override
   void dispose() {
     _switch.dispose();
     super.dispose();
@@ -406,7 +419,7 @@ class _MainToolbar extends ConsumerWidget {
                 tooltip: '播放页',
                 label: '播放',
                 icon: Icons.graphic_eq_rounded,
-                selected: location == '/player',
+                selected: selectedIndex == 2,
                 animatedPlayback: playerPlaying,
                 width: actionWidth,
                 height: actionHeight,

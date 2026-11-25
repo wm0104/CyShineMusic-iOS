@@ -30,8 +30,7 @@ class PlayerArtistResolution {
 }
 
 class PlayerArtistSelection {
-  const PlayerArtistSelection(this.request, this.resolution, {this.returnLocation = '/songs'});
-  final String returnLocation;
+  const PlayerArtistSelection(this.request, this.resolution);
   final PlayerArtistRequest request;
   final PlayerArtistResolution resolution;
 }

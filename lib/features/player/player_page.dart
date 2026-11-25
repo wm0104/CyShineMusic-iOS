@@ -65,10 +65,10 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
       final result = await resolvePlayerArtists(request, api: ref.read(musicApiProvider));
       if (!mounted || !widget.active || ref.read(playerControllerProvider).track?.id != request.trackId) return;
       ref.read(playerArtistSelectionProvider.notifier).state = PlayerArtistSelection(
-        request, result, returnLocation: widget.returnLocation);
+        request, result);
       final single = result.singleArtist;
-      final destination = single == null ? '/discover/track-artists'
-          : '/discover/artists/${single.source.code}/${Uri.encodeComponent(single.id)}?from=player';
+      final destination = single == null ? '/player/track-artists'
+          : '/player/artists/${single.source.code}/${Uri.encodeComponent(single.id)}';
       widget.onDismissRequested(destination);
     } catch (_) {
       if (mounted && widget.active) {

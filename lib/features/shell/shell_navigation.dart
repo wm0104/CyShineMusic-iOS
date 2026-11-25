@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -55,7 +57,36 @@ void openPlayer(BuildContext context, {required String returnLocation}) {
     FocusManager.instance.primaryFocus?.unfocus();
     pull.onOpen();
   } else {
-    context.push('/player', extra: returnLocation);
+    openPlayerRoute(GoRouter.of(context), returnLocation: returnLocation);
+  }
+}
+
+/// Reveals the existing player beneath playback artist pages where possible.
+void openPlayerRoute(GoRouter router, {String? returnLocation}) {
+  final location = router.routeInformationProvider.value.uri;
+  if (location.path == '/player') return;
+
+  String? topPath() {
+    final configuration = router.routerDelegate.currentConfiguration;
+    return configuration.isEmpty ? null : configuration.last.matchedLocation;
+  }
+
+  var top = topPath();
+  while (top != null && isPlaybackArtistLocation(top) && router.canPop()) {
+    router.pop();
+    top = topPath();
+  }
+  if (top == '/player') return;
+
+  final origin = normalizedPlayerReturnLocation(
+    returnLocation ?? location.toString(),
+    '/songs',
+  );
+  if (top != null && isPlaybackArtistLocation(top)) {
+    // A standalone artist route has no player under it to reveal.
+    router.go('/player', extra: origin);
+  } else {
+    unawaited(router.push<void>('/player', extra: origin));
   }
 }
 

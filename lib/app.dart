@@ -25,6 +25,7 @@ import 'features/music_sources/music_source_update_prompt.dart';
 import 'features/player/player_controller.dart';
 import 'features/player/live_activity_service.dart';
 import 'features/player/music_home_widget_service.dart';
+import 'features/shell/shell_navigation.dart';
 import 'features/songs/local_song_scan_cache.dart';
 import 'features/startup/startup_gate.dart';
 import 'features/update/app_update_prompt.dart';
@@ -159,19 +160,13 @@ class _CyShineMusicAppState extends ConsumerState<CyShineMusicApp>
   Future<void> _openWidgetPlayer() async {
     if (!mounted || !_externalAudioReady) return;
     if (!(_homeWidgetService?.takeOpenPlayerRequest() ?? false)) return;
-    final location = appRouter.routeInformationProvider.value.uri;
-    if (location.path != '/player') {
-      unawaited(appRouter.push<void>('/player', extra: location.toString()));
-    }
+    openPlayerRoute(appRouter);
   }
 
   /// 点 iOS 桌面 Widget 时把播放器推到前台（保留既有回调名称）。
   Future<void> _openLiveActivityPlayer() async {
     if (!mounted) return;
-    final location = appRouter.routeInformationProvider.value.uri;
-    if (location.path != '/player') {
-      unawaited(appRouter.push<void>('/player', extra: location.toString()));
-    }
+    openPlayerRoute(appRouter);
   }
 
   Future<void> _openPendingExternalAudio() async {
@@ -197,12 +192,7 @@ class _CyShineMusicAppState extends ConsumerState<CyShineMusicApp>
           _externalAudioRequested = true;
           final player = ref.read(playerControllerProvider.notifier);
           final playback = player.playFromFile(path);
-          final location = appRouter.routeInformationProvider.value.uri;
-          if (location.path != '/player') {
-            unawaited(
-              appRouter.push<void>('/player', extra: location.toString()),
-            );
-          }
+          openPlayerRoute(appRouter);
           await playback;
         } on MissingPluginException {
           // Other platforms and test engines do not install the Android entry.

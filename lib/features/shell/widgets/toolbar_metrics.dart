@@ -86,6 +86,7 @@ double toolbarOpacityFor(double reveal) {
 }
 
 int toolbarIndexFor(String location) {
+  if (location == '/player' || isPlaybackArtistLocation(location)) return 2;
   if (isDiscoveryLocation(location)) return 0;
   if (isSongsLibraryLocation(location) ||
       location == '/downloads' ||
@@ -93,8 +94,5 @@ int toolbarIndexFor(String location) {
     return 1;
   }
   if (location.startsWith('/settings') || location == '/debug') return 3;
-  return switch (location) {
-    '/player' => 2,
-    _ => 0,
-  };
+  return 0;
 }
