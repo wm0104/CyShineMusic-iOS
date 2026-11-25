@@ -54,6 +54,11 @@ class _TransportBarState extends ConsumerState<TransportBar> {
       0.0,
       maxMs.toDouble(),
     );
+    final shownPosition = Duration(milliseconds: shownMs.round());
+    final elapsedTime = _formatDuration(shownPosition);
+    final trailingTime = Theme.of(context).platform == TargetPlatform.iOS
+        ? _formatRemainingTime(vm.duration - shownPosition)
+        : _formatDuration(vm.duration);
     final canControl = vm.hasTrack && !vm.loading;
     return PlayerControlColor(
       builder: (context, ink) {
@@ -100,9 +105,7 @@ class _TransportBarState extends ConsumerState<TransportBar> {
                     ),
                     value: shownMs,
                     max: maxMs.toDouble(),
-                    label: _formatDuration(
-                      Duration(milliseconds: shownMs.round()),
-                    ),
+                    label: elapsedTime,
                     semanticFormatterCallback: (value) =>
                         _formatDuration(Duration(milliseconds: value.round())),
                     onChangeStart: canControl
@@ -142,15 +145,9 @@ class _TransportBarState extends ConsumerState<TransportBar> {
                 ),
                 child: Row(
                   children: [
-                    Text(
-                      _formatDuration(Duration(milliseconds: shownMs.round())),
-                      style: _timeStyle(context),
-                    ),
+                    Text(elapsedTime, style: _timeStyle(context)),
                     const Spacer(),
-                    Text(
-                      _formatDuration(vm.duration),
-                      style: _timeStyle(context),
-                    ),
+                    Text(trailingTime, style: _timeStyle(context)),
                   ],
                 ),
               ),
@@ -213,10 +210,20 @@ class _TransportBarState extends ConsumerState<TransportBar> {
     );
   }
 
-  String _formatDuration(Duration value) {
+  String _formatRemainingTime(Duration remaining) {
+    if (remaining <= Duration.zero) return '0:00';
+    final seconds = (remaining.inMicroseconds / Duration.microsecondsPerSecond)
+        .ceil();
+    return '−${_formatDuration(Duration(seconds: seconds), padMinutes: false)}';
+  }
+
+  String _formatDuration(Duration value, {bool padMinutes = true}) {
     final safe = value.isNegative ? Duration.zero : value;
     final hours = safe.inHours;
-    final minutes = safe.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final minutes = safe.inMinutes
+        .remainder(60)
+        .toString()
+        .padLeft(hours > 0 || padMinutes ? 2 : 1, '0');
     final seconds = safe.inSeconds.remainder(60).toString().padLeft(2, '0');
     return hours > 0 ? '$hours:$minutes:$seconds' : '$minutes:$seconds';
   }

@@ -12,7 +12,8 @@ class PlaylistInfo {
     this.description,
     this.playCount,
     this.trackCount,
-  });
+    bool? hasMoreTracks,
+  }) : _hasMoreTracks = hasMoreTracks;
 
   final String id;
   final String name;
@@ -23,8 +24,10 @@ class PlaylistInfo {
   final String? description;
   final int? playCount;
   final int? trackCount;
+  final bool? _hasMoreTracks;
 
   int get totalTracks => trackCount ?? tracks.length;
+  bool get hasMoreTracks => _hasMoreTracks ?? tracks.length < totalTracks;
 }
 
 class ParsedPlaylistTarget {

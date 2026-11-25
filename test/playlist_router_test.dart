@@ -10,8 +10,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cy_shine_music/core/storage/settings_store.dart';
 import 'package:cy_shine_music/core/api/music_api.dart';
 import 'package:cy_shine_music/core/models/enums.dart';
+import 'package:cy_shine_music/core/models/leaderboard_info.dart';
 import 'package:cy_shine_music/core/models/music_info.dart';
 import 'package:cy_shine_music/core/models/playlist_info.dart';
+import 'package:cy_shine_music/core/models/playlist_summary.dart';
 import 'package:cy_shine_music/features/downloads/download_history_entry.dart';
 import 'package:cy_shine_music/features/player/player_audio_handler.dart';
 import 'package:cy_shine_music/features/player/lyric_parser.dart';
@@ -28,6 +30,80 @@ void main() {
 
   setUp(() {
     SharedPreferences.setMockInitialValues({});
+  });
+
+  testWidgets('iOS edge back follows real shell page origins', (tester) async {
+    await _usePhoneViewport(tester);
+    final prefs = await _prefsWith([
+      _playlist(id: 'saved', name: '已保存歌单', originSourceCode: 'spotify'),
+    ]);
+    final audioHandler = PlayerAudioHandler();
+    final router = createAppRouter(initialLocation: '/settings');
+    addTearDown(() {
+      router.dispose();
+      unawaited(audioHandler.disposeHandler());
+    });
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          sharedPreferencesProvider.overrideWithValue(prefs),
+          playerAudioHandlerProvider.overrideWithValue(audioHandler),
+          musicApiProvider.overrideWithValue(_EdgeBackMusicApi()),
+        ],
+        child: MaterialApp.router(
+          routerConfig: router,
+          theme: ThemeData(platform: TargetPlatform.iOS),
+        ),
+      ),
+    );
+    await _pumpUi(tester);
+
+    String location() => router.routeInformationProvider.value.uri.toString();
+    Future<void> swipeFrom(String page, String expected) async {
+      await _pumpUi(tester);
+      expect(location(), page);
+      await tester.dragFrom(const Offset(4, 360), const Offset(210, 0));
+      await _pumpUi(tester);
+      expect(location(), expected, reason: 'Edge back from $page');
+    }
+
+    for (final (page, expected) in [
+      ('/settings/webdav', '/settings'),
+      ('/settings/equalizer', '/settings'),
+      ('/debug', '/settings'),
+      ('/downloads', '/songs'),
+      ('/songs/search', '/songs'),
+      ('/playlists', '/songs'),
+      ('/playlists/import', '/playlists'),
+      ('/discover/playlists/wy/online', '/'),
+      ('/discover/leaderboards/wy', '/'),
+      ('/discover/leaderboards/wy/chart', '/'),
+    ]) {
+      router.go(page);
+      await swipeFrom(page, expected);
+    }
+
+    const saved = '/playlists/saved?from=manage';
+    router.go(saved);
+    await _pumpUi(tester);
+    await tester.tap(find.text('补配未匹配项'));
+    await swipeFrom('/playlists/import?rematch=saved', saved);
+
+    for (final (origin, page) in [
+      ('/?origin=online', '/discover/playlists/wy/online'),
+      ('/?origin=charts', '/discover/leaderboards/wy'),
+      ('/?origin=chart', '/discover/leaderboards/wy/chart'),
+      (
+        '/discover/leaderboards/wy?origin=list',
+        '/discover/leaderboards/wy/chart',
+      ),
+    ]) {
+      router.go(origin);
+      await _pumpUi(tester);
+      unawaited(router.push<void>(page));
+      await swipeFrom(page, origin);
+    }
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets(
@@ -950,4 +1026,36 @@ class _PlaylistRefreshMusicApi extends MusicApi {
     inputs.add(input);
     return result;
   }
+}
+
+class _EdgeBackMusicApi extends _PlaylistRefreshMusicApi {
+  _EdgeBackMusicApi()
+    : super(
+        const PlaylistInfo(
+          id: 'online',
+          name: '在线歌单',
+          source: MusicSource.wy,
+          tracks: [],
+        ),
+      );
+
+  @override
+  Future<List<PlaylistSummary>> featuredPlaylists({
+    required MusicSource source,
+    int page = 1,
+    int limit = 20,
+    String? categoryId,
+  }) async => [];
+
+  @override
+  Future<List<LeaderboardSummary>> getLeaderboards(MusicSource source) async =>
+      [];
+
+  @override
+  Future<PlaylistInfo> getLeaderboard({
+    required MusicSource source,
+    required String boardId,
+    int? maxTracks,
+  }) async =>
+      PlaylistInfo(id: boardId, name: '榜单', source: source, tracks: const []);
 }

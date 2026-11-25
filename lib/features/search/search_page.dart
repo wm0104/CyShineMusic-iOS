@@ -285,6 +285,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
     }
     final response = state.response;
     final hasResults = state.resultCount > 0;
+    final canPrev = state.page > 1;
     final allPage = response?.allPage ?? state.page;
     final canNext =
         hasResults && state.page < (allPage > 0 ? allPage : state.page + 1);
@@ -295,10 +296,10 @@ class _SearchPageState extends ConsumerState<SearchPage> {
         return;
       }
       final next = SearchToolbarState(
-        visible: hasResults,
+        visible: hasResults || canPrev,
         page: state.page,
         loading: state.loading,
-        canPrev: hasResults && state.page > 1,
+        canPrev: canPrev,
         canNext: canNext,
         onPrev: () =>
             _runSearch(page: state.page - 1, scrollToTopOnSuccess: true),

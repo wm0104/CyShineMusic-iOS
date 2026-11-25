@@ -18,6 +18,7 @@ import 'package:cy_shine_music/features/search/search_controller.dart';
 import 'package:cy_shine_music/features/search/search_page.dart';
 import 'package:cy_shine_music/features/search/search_toolbar_state.dart';
 import 'package:cy_shine_music/features/search/widgets/search_result_tile.dart';
+import 'package:cy_shine_music/features/shell/widgets/search_paging_fab.dart';
 import 'package:cy_shine_music/router.dart';
 import 'package:cy_shine_music/theme/app_theme.dart';
 
@@ -307,6 +308,38 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('an empty second page still offers the previous page', (
+    tester,
+  ) async {
+    await _usePhoneViewport(tester);
+    final prefs = await SharedPreferences.getInstance();
+    final container = ProviderContainer(
+      overrides: [
+        sharedPreferencesProvider.overrideWithValue(prefs),
+        searchControllerProvider.overrideWith(_EmptyNextSearchController.new),
+      ],
+    );
+    addTearDown(container.dispose);
+    await tester.pumpWidget(
+      _testAppWithContainer(
+        container,
+        const Stack(children: [SearchPage(), SearchPagingFabLayer()]),
+      ),
+    );
+    await _pumpUi(tester);
+
+    await tester.tap(find.byTooltip('展开翻页菜单'));
+    await _pumpUi(tester);
+    await tester.tap(find.text('下一页'));
+    await _pumpUi(tester);
+
+    expect(find.text('没有找到结果'), findsOneWidget);
+    expect(find.text('上一页'), findsOneWidget);
+    await tester.tap(find.text('上一页'));
+    await _pumpUi(tester);
+    expect(find.text('第 1 页歌曲 01'), findsOneWidget);
+  });
+
   testWidgets('starting another search dismisses the previous search error', (
     tester,
   ) async {
@@ -421,6 +454,31 @@ class _ErrorSearchController extends SearchController {
 
   void startRetry() {
     state = state.copyWith(loading: true, error: null);
+  }
+}
+
+class _EmptyNextSearchController extends _TestSearchController {
+  @override
+  Future<void> search({
+    required String keyword,
+    MusicSource? source,
+    int page = 1,
+  }) async {
+    if (page == 1) {
+      await super.search(keyword: keyword, source: source);
+      return;
+    }
+    state = state.copyWith(
+      page: page,
+      response: SearchResponse(
+        list: const [],
+        page: page,
+        limit: 30,
+        allPage: page,
+        total: 0,
+        source: state.source,
+      ),
+    );
   }
 }
 

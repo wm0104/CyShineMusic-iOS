@@ -11,6 +11,18 @@ import 'internal/sdk_http.dart';
 import 'internal/wy_quality.dart';
 import 'internal/wy_yrc.dart';
 
+class WySearchException implements Exception {
+  const WySearchException({required this.httpStatus, this.responseCode});
+
+  final int httpStatus;
+  final int? responseCode;
+
+  @override
+  String toString() =>
+      'wy search failed (http=$httpStatus'
+      '${responseCode == null ? '' : ', code=$responseCode'})';
+}
+
 class WySdk {
   WySdk._();
 
@@ -141,7 +153,15 @@ class WySdk {
     );
     final body = _decodeBody(result.body);
     if (body is! Map || body['code'] != 200) {
-      throw Exception('wy search failed');
+      final code = body is Map ? body['code'] : null;
+      throw WySearchException(
+        httpStatus: result.statusCode,
+        responseCode: switch (code) {
+          int value => value,
+          String value => int.tryParse(value),
+          _ => null,
+        },
+      );
     }
     final resources = (body['data']?['resources'] as List?) ?? const [];
     final songs = <Map>[];

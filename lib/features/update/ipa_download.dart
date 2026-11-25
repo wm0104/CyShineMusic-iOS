@@ -208,6 +208,8 @@ class IpaDownload extends ChangeNotifier {
       : _dio = dio, _stagingDirectory = stagingDirectory;
   final Dio _dio;
   final Future<Directory> Function() _stagingDirectory;
+  static final _activeStagingFiles = <Uri>{};
+  static final _stagedIpaName = RegExp(r'^pending-(\d+)\.ipa$');
   CancelToken? _cancelToken;
   bool _disposed = false;
   bool downloading = false;
@@ -234,10 +236,14 @@ class IpaDownload extends ChangeNotifier {
     message = '正在下载 IPA…';
     _notify();
     File? partial;
+    Uri? stagingUri;
     try {
       final directory = await _stagingDirectory();
       if (token.isCancelled) throw token.cancelError!;
-      partial = File('${directory.path}/pending-${DateTime.now().microsecondsSinceEpoch}.ipa');
+      final startedAt = DateTime.now().microsecondsSinceEpoch;
+      partial = File('${directory.path}/pending-$startedAt.ipa');
+      stagingUri = partial.uri;
+      _activeStagingFiles.add(stagingUri);
       final response = await _dio.download(uri.toString(), partial.path,
         cancelToken: token,
         options: Options(validateStatus: (status) => status == 200),
@@ -287,11 +293,12 @@ class IpaDownload extends ChangeNotifier {
       _notify();
       final verified = await validateIpaFile(partial.path, expectedSha256: expectedHash);
       if (token.isCancelled) throw token.cancelError!;
-      // Only our previous staging file is removed; never an exported user file.
+      // Prune app-owned packages only after a new package passes validation.
       final previous = file;
       file = partial;
       partial = null;
       if (previous != null) await _removeStagingFile(previous);
+      await _removeOldStagingFiles(directory, startedAt);
       releaseTag = release.tagName;
       releaseBuildNumber = release.buildNumber;
       releaseSha256 = release.ipaSha256;
@@ -308,10 +315,26 @@ class IpaDownload extends ChangeNotifier {
       try {
         if (partial != null) await _removeStagingFile(partial);
       } finally {
+        _activeStagingFiles.remove(stagingUri);
         _cancelToken = null;
         downloading = false;
         _notify();
       }
+    }
+  }
+
+  Future<void> _removeOldStagingFiles(Directory directory, int startedAt) async {
+    try {
+      await for (final entry in directory.list(followLinks: false)) {
+        if (entry is! File || _activeStagingFiles.contains(entry.uri)) continue;
+        final match = _stagedIpaName.firstMatch(entry.uri.pathSegments.last);
+        final timestamp = int.tryParse(match?.group(1) ?? '');
+        if (timestamp != null && timestamp < startedAt) {
+          await _removeStagingFile(entry);
+        }
+      }
+    } catch (error) {
+      await AppLogger.write('update', 'IPA staging cleanup failed: $error');
     }
   }
 

@@ -66,7 +66,6 @@ final class SourceScriptSession: NSObject {
   private let channel: FlutterMethodChannel
   /// 所有 JS 访问都串行化在这条队列上；JSCore 的 JSContext 不是线程安全的。
   private let jsQueue = DispatchQueue(label: "com.cyshine.music.source.js")
-  private let timerQueue = DispatchQueue(label: "com.cyshine.music.source.timer")
 
   private var context: JSContext?
   private var metadata: [String: String] = [:]
@@ -77,9 +76,27 @@ final class SourceScriptSession: NSObject {
   /// 最后只表现为「初始化超时」。
   private var lastScriptException: String?
 
-  private var loadCompletion: ((Result<[String: Any?], Error>) -> Void)?
-  private var resolveCompletion: ((Result<[String: Any?], Error>) -> Void)?
+  private var pendingLoad: PendingOperation?
+  private var pendingResolve: PendingOperation?
   private var disposed = false
+
+  private struct PendingOperation {
+    let requestId = UUID().uuidString
+    let result: FlutterResult
+
+    func complete(_ outcome: Result<[String: Any?], Error>,
+                  errorCode: String = "MUSIC_SOURCE_RUNTIME") {
+      DispatchQueue.main.async {
+        switch outcome {
+        case .success(let value): result(value)
+        case .failure(let error):
+          result(FlutterError(code: errorCode,
+                              message: (error as? SourceRuntimeError)?.message ?? "\(error)",
+                              details: nil))
+        }
+      }
+    }
+  }
 
   /// 与 Android 的 MAX_SCRIPT_LENGTH 对齐。
   private static let maxScriptBytes = 2 * 1024 * 1024
@@ -147,6 +164,7 @@ final class SourceScriptSession: NSObject {
     case "httpResponse":
       let args = call.arguments as? [String: Any] ?? [:]
       deliverHttpResponse(args)
+      result(nil)
 
     default:
       result(FlutterMethodNotImplemented)
@@ -164,17 +182,8 @@ final class SourceScriptSession: NSObject {
       // teardown() 会把 disposed 置为 true；重新 load 时必须复位，
       // 否则后续 resolve 会被误判成「运行时已释放」。
       self.disposed = false
-      self.loadCompletion = { outcome in
-        DispatchQueue.main.async {
-          switch outcome {
-          case .success(let value): result(value)
-          case .failure(let error):
-            result(FlutterError(code: "MUSIC_SOURCE_RUNTIME",
-                                message: (error as? SourceRuntimeError)?.message ?? "\(error)",
-                                details: nil))
-          }
-        }
-      }
+      let operation = PendingOperation(result: result)
+      self.pendingLoad = operation
 
       do {
         let context = try self.makeContext()
@@ -222,26 +231,23 @@ final class SourceScriptSession: NSObject {
         // 正常情况下脚本会调 lx.send('inited', ...) -> native_call('init', ...)
         // 来兑现这个 Future；没上报的由超时兜底。
         self.emitLog(level: "info", message: "音源脚本已执行，等待脚本上报 inited")
-        self.scheduleLoadTimeout()
+        self.scheduleLoadTimeout(requestId: operation.requestId)
       } catch {
-        let completion = self.loadCompletion
-        self.loadCompletion = nil
-        completion?(.failure(error))
+        let pending = self.pendingLoad
+        self.pendingLoad = nil
+        pending?.complete(.failure(error))
       }
     }
   }
 
-  private func scheduleLoadTimeout() {
-    timerQueue.asyncAfter(deadline: .now() + Self.loadTimeoutSeconds) { [weak self] in
-      guard let self else { return }
-      self.jsQueue.async {
-        guard let completion = self.loadCompletion else { return }
-        self.loadCompletion = nil
-        let seconds = Int(Self.loadTimeoutSeconds)
-        let hint = self.lastScriptException.map { "，脚本异常：\($0)" } ?? ""
-        completion(.failure(SourceRuntimeError(
-          "音源脚本 \(seconds) 秒内没有上报 inited\(hint)")))
-      }
+  private func scheduleLoadTimeout(requestId: String) {
+    jsQueue.asyncAfter(deadline: .now() + Self.loadTimeoutSeconds) { [weak self] in
+      guard let self, let pending = self.pendingLoad, pending.requestId == requestId else { return }
+      self.pendingLoad = nil
+      let seconds = Int(Self.loadTimeoutSeconds)
+      let hint = self.lastScriptException.map { "，脚本异常：\($0)" } ?? ""
+      pending.complete(.failure(SourceRuntimeError(
+        "音源脚本 \(seconds) 秒内没有上报 inited\(hint)")))
     }
   }
 
@@ -256,7 +262,7 @@ final class SourceScriptSession: NSObject {
         }
         return
       }
-      if self.resolveCompletion != nil {
+      if self.pendingResolve != nil {
         DispatchQueue.main.async {
           result(FlutterError(code: "MUSIC_SOURCE_RUNTIME",
                               message: "已有解析正在进行", details: nil))
@@ -264,22 +270,11 @@ final class SourceScriptSession: NSObject {
         return
       }
 
-      self.resolveCompletion = { outcome in
-        DispatchQueue.main.async {
-          switch outcome {
-          case .success(let value): result(value)
-          case .failure(let error):
-            result(FlutterError(code: "MUSIC_SOURCE_RUNTIME",
-                                message: (error as? SourceRuntimeError)?.message ?? "\(error)",
-                                details: nil))
-          }
-        }
-      }
-
       // requestId 由原生侧生成（与 Android 一样用 UUID），preload.js 会原样带回来。
-      let requestId = UUID().uuidString
-      var payload: [String: Any] = [
-        "requestId": requestId,
+      let operation = PendingOperation(result: result)
+      self.pendingResolve = operation
+      let payload: [String: Any] = [
+        "requestId": operation.requestId,
         "source": args["source"] as? String ?? "",
         "quality": args["quality"] as? String ?? "",
         "musicInfo": args["musicInfo"] as? [String: Any] ?? [:],
@@ -287,9 +282,8 @@ final class SourceScriptSession: NSObject {
 
       guard let handle = context.objectForKeyedSubscript("__music_source_handle__"),
             !handle.isUndefined else {
-        let completion = self.resolveCompletion
-        self.resolveCompletion = nil
-        completion?(.failure(SourceRuntimeError("音源运行时未就绪")))
+        self.pendingResolve = nil
+        operation.complete(.failure(SourceRuntimeError("音源运行时未就绪")))
         return
       }
       handle.call(withArguments: ["resolve", self.encodeJSON(payload)])
@@ -298,24 +292,22 @@ final class SourceScriptSession: NSObject {
       do {
         try self.throwIfPendingException(context, fallback: "音源解析失败")
       } catch {
-        let completion = self.resolveCompletion
-        self.resolveCompletion = nil
-        completion?(.failure(error))
+        let pending = self.pendingResolve
+        self.pendingResolve = nil
+        pending?.complete(.failure(error))
         return
       }
 
-      self.scheduleResolveTimeout()
+      self.scheduleResolveTimeout(requestId: operation.requestId)
     }
   }
 
-  private func scheduleResolveTimeout() {
-    timerQueue.asyncAfter(deadline: .now() + 35) { [weak self] in
-      guard let self else { return }
-      self.jsQueue.async {
-        guard let completion = self.resolveCompletion else { return }
-        self.resolveCompletion = nil
-        completion(.failure(SourceRuntimeError("音源解析超时")))
-      }
+  private func scheduleResolveTimeout(requestId: String) {
+    jsQueue.asyncAfter(deadline: .now() + 35) { [weak self] in
+      guard let self, let pending = self.pendingResolve, pending.requestId == requestId else { return }
+      self.pendingResolve = nil
+      pending.complete(.failure(SourceRuntimeError("音源解析超时")),
+                       errorCode: "MUSIC_SOURCE_RESOLVE_TIMEOUT")
     }
   }
 
@@ -348,13 +340,13 @@ final class SourceScriptSession: NSObject {
     for (_, work) in timers { work.cancel() }
     timers.removeAll()
     context = nil
-    if let completion = loadCompletion {
-      loadCompletion = nil
-      completion(.failure(SourceRuntimeError("音源运行时已释放")))
+    if let pending = pendingLoad {
+      pendingLoad = nil
+      pending.complete(.failure(SourceRuntimeError("音源运行时已释放")))
     }
-    if let completion = resolveCompletion {
-      resolveCompletion = nil
-      completion(.failure(SourceRuntimeError("音源运行时已释放")))
+    if let pending = pendingResolve {
+      pendingResolve = nil
+      pending.complete(.failure(SourceRuntimeError("音源运行时已释放")))
     }
   }
 
@@ -377,14 +369,14 @@ final class SourceScriptSession: NSObject {
       self.lastScriptException = message
       self.emitLog(level: "error", message: "JS 异常：\(message)")
 
-      if let completion = self.loadCompletion {
-        self.loadCompletion = nil
-        completion(.failure(SourceRuntimeError("音源脚本抛异常：\(message)")))
+      if let pending = self.pendingLoad {
+        self.pendingLoad = nil
+        pending.complete(.failure(SourceRuntimeError("音源脚本抛异常：\(message)")))
         return
       }
-      if let completion = self.resolveCompletion {
-        self.resolveCompletion = nil
-        completion(.failure(SourceRuntimeError("音源脚本抛异常：\(message)")))
+      if let pending = self.pendingResolve {
+        self.pendingResolve = nil
+        pending.complete(.failure(SourceRuntimeError("音源脚本抛异常：\(message)")))
       }
     }
     registerNativeFunctions(on: context)
@@ -517,9 +509,8 @@ final class SourceScriptSession: NSObject {
   }
 
   private func handleInit(json: String) {
-    guard let payload = Self.decodeJSON(json) else { return }
-    let completion = loadCompletion
-    loadCompletion = nil
+    guard let pending = pendingLoad, let payload = Self.decodeJSON(json) else { return }
+    pendingLoad = nil
 
     if payload["status"] as? Bool == true {
       // Dart 侧只认 {sources: {...}}，preload 已经把能力归一化好了。
@@ -527,25 +518,25 @@ final class SourceScriptSession: NSObject {
       let info = payload["info"] as? [String: Any] ?? [:]
       var mapped: [String: Any?] = [:]
       for (key, value) in info { mapped[key] = value }
-      completion?(.success(mapped))
+      pending.complete(.success(mapped))
     } else {
-      completion?(.failure(SourceRuntimeError(payload["error"] as? String ?? "音源初始化失败")))
+      pending.complete(.failure(SourceRuntimeError(payload["error"] as? String ?? "音源初始化失败")))
     }
   }
 
   private func handleResolveResult(json: String) {
-    guard let payload = Self.decodeJSON(json) else { return }
-    let completion = resolveCompletion
-    resolveCompletion = nil
+    guard let pending = pendingResolve, let payload = Self.decodeJSON(json),
+          (payload["requestId"] as? String) == pending.requestId else { return }
+    pendingResolve = nil
 
     if payload["status"] as? Bool == true {
       var value: [String: Any?] = ["url": payload["url"] ?? ""]
       if let fileName = payload["fileName"] as? String, !fileName.isEmpty {
         value["fileName"] = fileName
       }
-      completion?(.success(value))
+      pending.complete(.success(value))
     } else {
-      completion?(.failure(SourceRuntimeError(payload["error"] as? String ?? "音源解析失败")))
+      pending.complete(.failure(SourceRuntimeError(payload["error"] as? String ?? "音源解析失败")))
     }
   }
 
@@ -558,10 +549,10 @@ final class SourceScriptSession: NSObject {
     let work = DispatchWorkItem { [weak self] in
       guard let self else { return }
       self.timers.removeValue(forKey: id)
-      self.jsQueue.async { self.deliverTimeout(id: id) }
+      self.deliverTimeout(id: id)
     }
     timers[id] = work
-    timerQueue.asyncAfter(deadline: .now() + clamped, execute: work)
+    jsQueue.asyncAfter(deadline: .now() + clamped, execute: work)
   }
 
   private func cancelTimer(id: Int) {

@@ -627,18 +627,22 @@ public final class BassPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandl
 
     endSync = BASS_ChannelSetSync(
       stream, UInt32(BASS_SYNC_END), 0,
-      { _, _, _, user in
+      { handle, channel, _, user in
         guard let user else { return }
         let plugin = Unmanaged<BassPlayerPlugin>.fromOpaque(user).takeUnretainedValue()
-        plugin.engineQueue.async { plugin.handleStreamEnded() }
+        plugin.engineQueue.async {
+          guard channel == plugin.stream, handle == plugin.endSync else { return }
+          plugin.handleStreamEnded()
+        }
       }, user)
 
     stallSync = BASS_ChannelSetSync(
       stream, UInt32(BASS_SYNC_STALL), 0,
-      { _, _, _, user in
+      { handle, channel, _, user in
         guard let user else { return }
         let plugin = Unmanaged<BassPlayerPlugin>.fromOpaque(user).takeUnretainedValue()
         plugin.engineQueue.async {
+          guard channel == plugin.stream, handle == plugin.stallSync else { return }
           plugin.refreshPlaybackState()
           plugin.emitSnapshot()
         }
@@ -646,10 +650,11 @@ public final class BassPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandl
 
     deviceFailureSync = BASS_ChannelSetSync(
       stream, UInt32(BASS_SYNC_DEV_FAIL), 0,
-      { _, _, _, user in
+      { handle, channel, _, user in
         guard let user else { return }
         let plugin = Unmanaged<BassPlayerPlugin>.fromOpaque(user).takeUnretainedValue()
         plugin.engineQueue.async {
+          guard channel == plugin.stream, handle == plugin.deviceFailureSync else { return }
           plugin.processingState = .error
           plugin.playing = false
           plugin.emitSnapshot()
@@ -667,10 +672,13 @@ public final class BassPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandl
     if remoteSource {
       downloadSync = BASS_ChannelSetSync(
         stream, UInt32(BASS_SYNC_DOWNLOAD), 0,
-        { _, _, _, user in
+        { handle, channel, _, user in
           guard let user else { return }
           let plugin = Unmanaged<BassPlayerPlugin>.fromOpaque(user).takeUnretainedValue()
-          plugin.engineQueue.async { plugin.emitSnapshot() }
+          plugin.engineQueue.async {
+            guard channel == plugin.stream, handle == plugin.downloadSync else { return }
+            plugin.emitSnapshot()
+          }
         }, user)
     }
   }

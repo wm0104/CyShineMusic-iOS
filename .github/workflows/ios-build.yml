@@ -124,13 +124,15 @@ jobs:
         run: >-
           flutter test --timeout 2m test/app_update*_test.dart
           test/player_source_fallback_test.dart test/player_audio_handler_test.dart
+          test/transport_bar_test.dart
 
-      - name: Playlist and artist regression tests
+      - name: Playlist and search regression tests
         run: >-
           flutter test --timeout 2m test/playlist*_test.dart
           test/spotify*_test.dart test/player_artist*_test.dart
           test/track_artist_sdk_test.dart test/track_metadata_fixture_test.dart
           test/artist_search_test.dart test/music_url_resolver_fallback_test.dart
+          test/search_controller_test.dart test/search_ui_test.dart
           test/music_source_runtime_policy_test.dart test/settings_preferences_test.dart
           test/settings_icon_entry_test.dart
 

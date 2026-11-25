@@ -98,6 +98,7 @@ class MusicApi {
       allPage: result.allPage,
       total: result.total,
       source: result.source,
+      hasFailedSources: result.hasFailedSources,
     );
   }
 

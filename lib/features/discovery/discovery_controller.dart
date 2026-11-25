@@ -112,6 +112,22 @@ class OnlinePlaylistKey {
 
 typedef ArtistPageKey = ({MusicSource source, String id, int offset});
 
+final artistArtworkProvider = FutureProvider.autoDispose
+    .family<String?, ({MusicSource source, String id, String name})>((
+      ref,
+      key,
+    ) async {
+      final result = await ref
+          .watch(musicApiProvider)
+          .searchArtists(keyword: key.name, source: key.source);
+      for (final artist in result.artists) {
+        if (artist.id != key.id || artist.source != key.source) continue;
+        final cover = CoverImageSource.normalizeArtistUrl(artist.coverUrl);
+        if (cover != null) return cover;
+      }
+      return null;
+    });
+
 final artistTrackPageProvider =
     FutureProvider.family<ArtistTrackPage, ArtistPageKey>((ref, key) {
       return ref
@@ -149,17 +165,25 @@ final onlinePlaylistDetailProvider =
                 for (final track in page.tracks)
                   if (seen.add(track.id)) track,
             ];
+            final first = pages.first;
             final last = pages.last;
+            final total = pages.reversed
+                .firstWhere(
+                  (page) => page.tracks.isNotEmpty,
+                  orElse: () => first,
+                )
+                .total;
             final exhausted =
                 last.tracks.isEmpty ||
-                last.offset + onlinePlaylistDetailTrackPageSize >= last.total;
+                last.offset + onlinePlaylistDetailTrackPageSize >= total;
             return PlaylistInfo(
               id: key.id,
               source: key.source,
-              name: pages.first.artistName ?? '歌手详情',
-              coverUrl: pages.first.coverUrl,
+              name: first.artistName ?? '歌手详情',
+              coverUrl: first.coverUrl,
               tracks: tracks,
-              trackCount: exhausted ? tracks.length : last.total,
+              trackCount: total,
+              hasMoreTracks: !exhausted,
             );
           }),
         OnlineCollectionKind.playlist => api.parsePlaylist(

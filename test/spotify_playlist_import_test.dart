@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -5,6 +6,7 @@ import 'package:cy_shine_music/core/models/download_capabilities.dart';
 import 'package:cy_shine_music/core/models/enums.dart';
 import 'package:cy_shine_music/core/models/music_info.dart';
 import 'package:cy_shine_music/core/music_sources/music_source_controller.dart';
+import 'package:cy_shine_music/core/sdk/wy_sdk.dart';
 import 'package:cy_shine_music/core/services/app_logger.dart';
 import 'package:cy_shine_music/core/storage/settings_store.dart';
 import 'package:cy_shine_music/core/ui/expressive_download_button.dart';
@@ -15,6 +17,7 @@ import 'package:cy_shine_music/features/playlists/playlist_store.dart';
 import 'package:cy_shine_music/features/playlists/spotify_playlist_import.dart';
 import 'package:cy_shine_music/features/search/widgets/quality_picker_sheet.dart';
 import 'package:cy_shine_music/features/search/widgets/search_result_tile.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -62,6 +65,7 @@ MusicInfo _candidate(
   String singer = 'Singer',
   String interval = '03:20',
   MusicSource source = MusicSource.wy,
+  String album = 'Match album',
 }) {
   return MusicInfo.fromJson({
     'id': '${source.code}_1',
@@ -69,7 +73,7 @@ MusicInfo _candidate(
     'singer': singer,
     'interval': interval,
     'source': source.code,
-    'meta': {'songId': '1', 'albumName': 'Match album'},
+    'meta': {'songId': '1', 'albumName': album},
   });
 }
 
@@ -157,6 +161,33 @@ void main() {
     }
   });
 
+  test('a studio album title can contain a recording tag as ordinary text', () async {
+    for (final album in ['Live Through This', 'A Reason to Live']) {
+      final preview = await _importer(
+        [_track('Violet', artist: 'Hole')],
+        search: (_, _) async => [_candidate('Violet', singer: 'Hole', album: album)],
+      ).read(_link);
+      expect(preview.matched, 1, reason: album);
+    }
+  });
+
+  test('explicit album labels reject alternate recordings of the same song', () async {
+    for (final (title, artist, album) in [
+      ('Radio Ga Ga', 'Queen', 'Live at Wembley'),
+      ('Violet', 'Hole', 'Collection - Remix'),
+      ('Violet', 'Hole', 'Concert (Live)'),
+      ('Shake It Off', 'Taylor Swift', '1989 World Tour Live'),
+      ('Help!', 'The Beatles', 'The Beatles Live'),
+      ('稻香', '周杰伦', '夏日现场演唱会'),
+    ]) {
+      final preview = await _importer(
+        [_track(title, artist: artist)],
+        search: (_, _) async => [_candidate(title, singer: artist, album: album)],
+      ).read(_link);
+      expect(preview.matched, 0, reason: album);
+    }
+  });
+
   test('title-only retry is bounded to empty combined results', () async {
     final queries = <String>[];
     final preview = await _importer([_track('Song A')], search: (query, _) async {
@@ -241,6 +272,91 @@ void main() {
     expect(logs, contains('tx search failed'));
     expect(logs, isNot(contains('private-test-token')));
     expect(logs, isNot(contains('private.example')));
+  });
+
+  test('a failed row keeps successful and unmatched rows in the preview', () async {
+    final preview = await _importer(
+      [_track('First'), _track('Failed'), _track('Missing'), _track('Last')],
+      search: (query, _) async => switch (query) {
+        'First Singer' => [_candidate('First')],
+        'Failed Singer' => throw Exception('failed search'),
+        'Last Singer' => [_candidate('Last')],
+        _ => [],
+      },
+    ).read(_link);
+
+    expect(preview.tracks.map((track) => track.name), [
+      'First', 'Failed', 'Missing', 'Last',
+    ]);
+    expect(preview.tracks.map((track) => track.isUnmatchedSpotify), [
+      false, true, true, false,
+    ]);
+    expect(preview.matchIssues?.failed, 1);
+    expect(preview.matchIssues?.unfinished, 0);
+    expect(preview.matchIssues?.rateLimited, isFalse);
+  });
+
+  test('HTTP rate limit stops new searches and retries while keeping in-flight matches', () async {
+    final searches = <String>[];
+    final settled = Completer<void>();
+    final previewRequest = _importer(
+      [_track('First'), _track('Limited'), _track('Empty'), _track('Skipped')],
+      search: (query, source) async {
+        searches.add(query);
+        expect(source, MusicSource.wy);
+        switch (query) {
+          case 'First Singer':
+            await settled.future;
+            return [_candidate('First')];
+          case 'Limited Singer':
+            final options = RequestOptions();
+            throw DioException.badResponse(
+              statusCode: 429,
+              requestOptions: options,
+              response: Response(requestOptions: options, statusCode: 429),
+            );
+          case 'Empty Singer':
+            await settled.future;
+        }
+        return [];
+      },
+    ).read(_link);
+    final previewExpectation = expectLater(previewRequest, completes);
+    await Future<void>.delayed(Duration.zero);
+    settled.complete();
+    await previewExpectation;
+
+    final preview = await previewRequest;
+    expect(searches, ['First Singer', 'Limited Singer', 'Empty Singer']);
+    expect(preview.matched, 1);
+    expect(preview.matchIssues?.failed, 1);
+    expect(preview.matchIssues?.unfinished, 2);
+    expect(preview.matchIssues?.rateLimited, isTrue);
+  });
+
+  test('Wy business-code rate limit uses the retry error when every search fails', () async {
+    final searches = <String>[];
+    final before = AppLogger.recentMemoryLines.length;
+    final importer = _importer(
+      [_track('First'), _track('Second'), _track('Third'), _track('Fourth')],
+      search: (query, _) async {
+        searches.add(query);
+        throw const WySearchException(httpStatus: 200, responseCode: 405);
+      },
+    );
+
+    await expectLater(
+      importer.read(_link),
+      throwsA(isA<StateError>().having(
+        (error) => error.message,
+        'message',
+        '网易云搜索请求过于频繁，请稍后重试',
+      )),
+    );
+    expect(searches, ['First Singer', 'Second Singer', 'Third Singer']);
+    final logs = AppLogger.recentMemoryLines.skip(before).join('\n');
+    expect(logs, contains('http=200 code=405'));
+    expect(logs, isNot(contains('First Singer')));
   });
 
   test('cancellation stops retry and does not advance completed progress', () async {
@@ -513,9 +629,16 @@ void main() {
         overrides: [
           spotifyPlaylistImporterProvider.overrideWithValue(
             _importer(
-              [_track('Song A', artist: 'Singer, Guest'), _track('Missing')],
-              total: 2,
-              search: (_, _) async => [candidate],
+              [
+                _track('Song A', artist: 'Singer, Guest'),
+                _track('Missing'),
+                _track('Failed'),
+              ],
+              total: 3,
+              search: (query, _) async {
+                if (query == 'Failed Singer') throw Exception('search failed');
+                return [candidate];
+              },
             ),
           ),
           downloadCapabilitiesProvider.overrideWithValue(
@@ -545,10 +668,18 @@ void main() {
       expect(
         find.descendant(
           of: sourceLink,
-          matching: find.text('Spotify · 2 首 · Creator'),
+          matching: find.text('Spotify · 3 首 · Creator'),
         ),
         findsOneWidget,
       );
+      expect(
+        find.text('1 首已匹配音源 · 2 首未匹配'),
+        findsOneWidget,
+      );
+      expect(find.text('补配未匹配项'), findsOneWidget);
+      expect(find.text('1 首搜索失败，可补配未匹配项'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 4));
+      await tester.pumpAndSettle();
       final matched = find.widgetWithText(TrackResultRow, 'Song A');
       final missing = find.widgetWithText(TrackResultRow, 'Missing');
       expect(tester.getSize(matched).height, tester.getSize(missing).height);

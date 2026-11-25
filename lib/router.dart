@@ -128,6 +128,7 @@ GoRouter createAppRouter({
                         kind: OnlineCollectionKind.artist,
                         summary: _routePayload<PlaylistSummary>(state.extra),
                         onBack: onBack,
+                        fromPlayback: onBack != null,
                       );
                       return _containerTransformPage(
                         context,

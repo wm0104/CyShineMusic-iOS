@@ -3,9 +3,12 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:audio_service/audio_service.dart';
+import 'package:audio_service_platform_interface/audio_service_platform_interface.dart';
+import 'package:audio_service_platform_interface/method_channel_audio_service.dart';
 import 'package:audio_session/audio_session.dart';
 import 'package:bass_player/bass_player.dart';
 import 'package:crypto/crypto.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
@@ -75,13 +78,115 @@ bool shouldActivatePlayerAudioSession({
 Future<PlayerAudioHandler> initializePlayerAudioHandler({
   bool allowMixWithOthers = false,
 }) async {
-  final handler = await AudioService.init<PlayerAudioHandler>(
-    builder: () => PlayerAudioHandler(allowMixWithOthers: allowMixWithOthers),
+  late PlayerAudioHandler handler;
+  if (Platform.isIOS) {
+    AudioServicePlatform.instance = IosAudioServiceAdapter(() => handler);
+  }
+  await AudioService.init<PlayerAudioHandler>(
+    builder: () =>
+        handler = PlayerAudioHandler(allowMixWithOthers: allowMixWithOthers),
     config: playerAudioServiceConfig,
   );
 
   await handler.setAllowMixWithOthers(allowMixWithOthers);
   return handler;
+}
+
+/// Keeps the iOS Now Playing clock current when audio_service sends metadata.
+class IosAudioServiceAdapter extends MethodChannelAudioService {
+  IosAudioServiceAdapter(this._handler);
+
+  final PlayerAudioHandler Function() _handler;
+  Future<void> _pending = Future<void>.value();
+  String? _lastStateTrackId;
+
+  @override
+  Future<void> setState(SetStateRequest request) {
+    final handler = _handler();
+    final trackId = handler._stateTracks[request.state.updateTime];
+    return _enqueue(() async {
+      final processing = request.state.processingState;
+      final hasPosition =
+          processing == AudioProcessingStateMessage.ready ||
+          processing == AudioProcessingStateMessage.buffering;
+      if (hasPosition &&
+          trackId != null &&
+          trackId != handler.currentMediaItem?.id) {
+        return;
+      }
+      // A queued position sample must not undo an anchor already sent with metadata.
+      final current = hasPosition ? _currentState(trackId) : null;
+      await super.setState(current ?? request);
+      _lastStateTrackId = trackId;
+    });
+  }
+
+  @override
+  Future<void> setMediaItem(SetMediaItemRequest request) {
+    return _enqueue(() async {
+      final trackId = request.mediaItem.id;
+      if (_lastStateTrackId == trackId) {
+        final anchor = _currentState(trackId);
+        if (anchor != null) await super.setState(anchor);
+      }
+      // This also covers audio_service's second publication after fetching art.
+      await super.setMediaItem(request);
+    });
+  }
+
+  Future<void> _enqueue(Future<void> Function() send) {
+    final result = _pending.then((_) => send());
+    _pending = result.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+    return result;
+  }
+
+  SetStateRequest? _currentState(String? trackId) {
+    final handler = _handler();
+    final playback = handler.playbackState.value;
+    if (trackId == null ||
+        trackId != handler.currentMediaItem?.id ||
+        handler._trackTransitionActive ||
+        (playback.processingState != AudioProcessingState.ready &&
+            playback.processingState != AudioProcessingState.buffering)) {
+      return null;
+    }
+    return SetStateRequest(
+      state: PlaybackStateMessage(
+        processingState:
+            AudioProcessingStateMessage.values[playback.processingState.index],
+        playing: playback.playing,
+        controls: playback.controls.map((control) {
+          final custom = control.customAction;
+          return MediaControlMessage(
+            androidIcon: control.androidIcon,
+            label: control.label,
+            action: MediaActionMessage.values[control.action.index],
+            customAction: custom == null
+                ? null
+                : CustomMediaActionMessage(
+                    name: custom.name,
+                    extras: custom.extras,
+                  ),
+          );
+        }).toList(),
+        androidCompactActionIndices: playback.androidCompactActionIndices,
+        systemActions: playback.systemActions
+            .map((action) => MediaActionMessage.values[action.index])
+            .toSet(),
+        updatePosition: handler.position,
+        bufferedPosition: handler._player.bufferedPosition,
+        speed: playback.speed,
+        errorCode: playback.errorCode,
+        errorMessage: playback.errorMessage,
+        repeatMode:
+            AudioServiceRepeatModeMessage.values[playback.repeatMode.index],
+        shuffleMode:
+            AudioServiceShuffleModeMessage.values[playback.shuffleMode.index],
+        captioningEnabled: playback.captioningEnabled,
+        queueIndex: playback.queueIndex,
+      ),
+    );
+  }
 }
 
 class PlayerAudioHandler extends BaseAudioHandler with SeekHandler {
@@ -120,6 +225,7 @@ class PlayerAudioHandler extends BaseAudioHandler with SeekHandler {
   AudioServiceRepeatMode _repeatMode = AudioServiceRepeatMode.all;
   AudioServiceShuffleMode _shuffleMode = AudioServiceShuffleMode.none;
   MediaItem? _currentMediaItem;
+  final _stateTracks = Expando<String>();
   MediaItem? _mediaItemBeforeTransition;
   int? _queueIndexBeforeTransition;
   bool _trackTransitionActive = false;
@@ -274,7 +380,7 @@ class PlayerAudioHandler extends BaseAudioHandler with SeekHandler {
     _trackTransitionActive = false;
     _clearTransitionSnapshot();
     final restoredState = _transformEvent(_player.snapshot);
-    playbackState.add(
+    _publishPlaybackState(
       restoredState.copyWith(
         processingState:
             restoredState.processingState == AudioProcessingState.idle
@@ -683,10 +789,10 @@ class PlayerAudioHandler extends BaseAudioHandler with SeekHandler {
       ),
     );
     if (_trackTransitionActive) {
-      playbackState.add(_transitionState(_player.snapshot));
+      _publishPlaybackState(_transitionState(_player.snapshot));
       return;
     }
-    playbackState.add(
+    _publishPlaybackState(
       _transformEvent(_player.snapshot).copyWith(
         processingState: AudioProcessingState.error,
         errorCode: 1,
@@ -696,9 +802,15 @@ class PlayerAudioHandler extends BaseAudioHandler with SeekHandler {
   }
 
   void _broadcastState(BassPlaybackSnapshot event) {
-    playbackState.add(
+    _publishPlaybackState(
       _trackTransitionActive ? _transitionState(event) : _transformEvent(event),
     );
+  }
+
+  void _publishPlaybackState(PlaybackState state) {
+    // audio_service passes this DateTime object through to PlaybackStateMessage.
+    _stateTracks[state.updateTime] = _currentMediaItem?.id;
+    playbackState.add(state);
   }
 
   PlaybackState _transitionState(BassPlaybackSnapshot event) {
@@ -713,6 +825,10 @@ class PlayerAudioHandler extends BaseAudioHandler with SeekHandler {
 
   PlaybackState _transformEvent(BassPlaybackSnapshot event) {
     final hasItem = _currentMediaItem != null;
+    final processingState = _player.processingState;
+    final bufferingOnIos =
+        defaultTargetPlatform == TargetPlatform.iOS &&
+        processingState == BassProcessingState.buffering;
     final controls = hasItem
         ? <MediaControl>[
             MediaControl.skipToPrevious,
@@ -732,7 +848,7 @@ class PlayerAudioHandler extends BaseAudioHandler with SeekHandler {
               MediaAction.setShuffleMode,
             }
           : const {},
-      processingState: switch (_player.processingState) {
+      processingState: switch (processingState) {
         BassProcessingState.idle => AudioProcessingState.idle,
         BassProcessingState.loading => AudioProcessingState.loading,
         BassProcessingState.buffering => AudioProcessingState.buffering,
@@ -743,7 +859,7 @@ class PlayerAudioHandler extends BaseAudioHandler with SeekHandler {
       playing: _player.playing,
       updatePosition: _player.position,
       bufferedPosition: _player.bufferedPosition,
-      speed: _player.speed,
+      speed: bufferingOnIos ? 0 : _player.speed,
       queueIndex: _queueIndex,
       repeatMode: _repeatMode,
       shuffleMode: _shuffleMode,

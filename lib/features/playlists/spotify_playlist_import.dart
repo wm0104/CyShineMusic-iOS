@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
@@ -8,6 +9,7 @@ import '../../core/models/enums.dart';
 import '../../core/models/music_info.dart';
 import '../../core/music_sources/music_source_controller.dart';
 import '../../core/sdk/internal/sdk_http.dart';
+import '../../core/sdk/wy_sdk.dart' show WySearchException;
 import '../../core/services/app_logger.dart';
 import '../../core/storage/settings_store.dart';
 import 'playlist_models.dart';
@@ -21,6 +23,7 @@ class SpotifyPlaylistPreview {
     this.creator,
     this.coverUrl,
     this.hasMatchingPlatforms = true,
+    this.matchIssues,
   });
 
   final String id;
@@ -30,9 +33,22 @@ class SpotifyPlaylistPreview {
   final String? creator;
   final String? coverUrl;
   final bool hasMatchingPlatforms;
+  final SpotifyMatchIssues? matchIssues;
 
   bool get complete => total == tracks.length;
   int get matched => tracks.where((track) => !track.isUnmatchedSpotify).length;
+}
+
+class SpotifyMatchIssues {
+  const SpotifyMatchIssues({
+    required this.failed,
+    required this.unfinished,
+    required this.rateLimited,
+  });
+
+  final int failed;
+  final int unfinished;
+  final bool rateLimited;
 }
 
 const _shareHosts = {
@@ -129,11 +145,13 @@ class SpotifyPlaylistImporter {
     final entity = _parseEntity(embed.body, id);
     final total = await totalRequest;
     final originals = _parseTracks(entity['trackList']);
+    SpotifyMatchIssues? matchIssues;
     final results = await rematchUnmatched(
       [for (final track in originals) PlaylistTrack.fromSpotify(track, null)],
       source: source,
       onProgress: onProgress,
       cancelled: cancelled,
+      onIssues: (issues) => matchIssues = issues,
     );
     final art = entity['coverArt'];
     final sources = art is Map ? art['sources'] : null;
@@ -145,7 +163,8 @@ class SpotifyPlaylistImporter {
       coverUrl: cover is Map ? cover['url'] as String? : null,
       total: total,
       hasMatchingPlatforms: true,
-      tracks: List.unmodifiable(results),
+      tracks: results,
+      matchIssues: matchIssues,
     );
   }
 
@@ -154,6 +173,7 @@ class SpotifyPlaylistImporter {
     MusicSource source = MusicSource.wy,
     void Function(int done, int total)? onProgress,
     bool Function()? cancelled,
+    void Function(SpotifyMatchIssues issues)? onIssues,
   }) async {
     final snapshot = List<PlaylistTrack>.unmodifiable(tracks);
     if (cancelled?.call() == true) return snapshot;
@@ -169,18 +189,33 @@ class SpotifyPlaylistImporter {
     ];
     var nextIndex = 0;
     var done = 0;
+    var completedSearches = 0;
+    var failed = 0;
+    var unfinished = 0;
+    var rateLimited = false;
+    bool canSearch(int index) {
+      final track = snapshot[index].spotify!;
+      return track.type == 'track' && track.artist.isNotEmpty;
+    }
+
     onProgress?.call(0, indices.length);
     Future<void> matchNext() async {
-      while (nextIndex < indices.length && cancelled?.call() != true) {
+      while (!rateLimited &&
+          nextIndex < indices.length &&
+          cancelled?.call() != true) {
         final index = indices[nextIndex++];
         final original = snapshot[index];
         final track = original.spotify!;
-        if (track.type == 'track' && track.artist.isNotEmpty) {
+        if (canSearch(index)) {
           try {
             var candidates = await search('${track.title} ${track.artist}', source);
             if (cancelled?.call() == true) return;
             // Only empty searches get one bounded retry, never ambiguous hits.
             if (candidates.isEmpty) {
+              if (rateLimited) {
+                unfinished++;
+                return;
+              }
               candidates = await search(track.title, source);
               if (cancelled?.call() == true) return;
             }
@@ -190,12 +225,30 @@ class SpotifyPlaylistImporter {
                 localPath: original.localPath,
               );
             }
+            completedSearches++;
           } on Exception catch (error) {
-            await AppLogger.write(
-              'spotify-import',
-              '${source.code} search failed (${error.runtimeType})',
+            if (cancelled?.call() == true) return;
+            failed++;
+            final httpStatus = switch (error) {
+              WySearchException() => error.httpStatus,
+              DioException() => error.response?.statusCode,
+              _ => null,
+            };
+            final responseCode = error is WySearchException
+                ? error.responseCode
+                : null;
+            if (httpStatus == 429 || responseCode == 405 || responseCode == 429) {
+              rateLimited = true;
+            }
+            unawaited(
+              AppLogger.write(
+                'spotify-import',
+                '${source.code} search failed (${error.runtimeType})'
+                '${httpStatus == null ? '' : ' http=$httpStatus'}'
+                '${responseCode == null ? '' : ' code=$responseCode'}',
+              ),
             );
-            throw StateError('${source.label}搜索失败，请重试');
+            continue;
           }
         }
         if (cancelled?.call() == true) return;
@@ -204,7 +257,25 @@ class SpotifyPlaylistImporter {
     }
 
     await Future.wait(List.generate(3, (_) => matchNext()));
-    return cancelled?.call() == true ? snapshot : List.unmodifiable(results);
+    if (cancelled?.call() == true) return snapshot;
+    if (failed > 0) {
+      if (completedSearches == 0) {
+        throw StateError(
+          rateLimited
+              ? '${source.label}搜索请求过于频繁，请稍后重试'
+              : '${source.label}搜索失败，请重试',
+        );
+      }
+      unfinished += indices.skip(nextIndex).where(canSearch).length;
+      onIssues?.call(
+        SpotifyMatchIssues(
+          failed: failed,
+          unfinished: unfinished,
+          rateLimited: rateLimited,
+        ),
+      );
+    }
+    return List.unmodifiable(results);
   }
 
   Future<int?> _readTotal(String id) async {
@@ -327,17 +398,49 @@ bool? _knownExplicit(MusicInfo music) {
   return value is bool ? value : null;
 }
 
-String _recordingTags(String value) {
-  final tags = <String>{};
+final _recordingQualifier = RegExp(
+  r'\([^()]*\)|\[[^\[\]]*\]|（[^（）]*）|【[^【】]*】|(?:\s+[-–—]\s+|:\s+).+$',
+);
+final _liveLocation = RegExp(
+  r'\blive\s+(?:at|in|from)\b',
+  caseSensitive: false,
+);
+final _liveAlbumLabel = RegExp(
+  r'(?:^|\s)(?!to\b)\S+\s+live$|现场\s*演唱会|演唱会\s*现场',
+  caseSensitive: false,
+);
+final _recordingTagsByName = {
   for (final tag in [
     r'\blive\b|现场', r'\bremix\b|混音', r'\bclean\b',
     r'\binstrumental\b|伴奏', r'\bkaraoke\b', r'\bcover\b|翻唱',
     r'\bsped[ -]?up\b|\bspeed[ -]?up\b|加速',
     r'\bslowed\b|慢速|降速', r'\bacoustic\b', r'\bremaster(?:ed)?\b',
-  ]) {
-    if (RegExp(tag, caseSensitive: false).hasMatch(value)) tags.add(tag);
-  }
-  return (tags.toList()..sort()).join('|');
+  ])
+    tag: (
+      qualifier: RegExp(tag, caseSensitive: false),
+      label: RegExp(
+        '^(?:$tag)\$|(?:$tag)'
+        r'(?:\s+(?:versions?|editions?|recordings?|albums?|mixes?|\d{4})\b|版|录音|专辑)',
+        caseSensitive: false,
+      ),
+    ),
+};
+
+String _recordingTags(String title, [String album = '']) {
+  final albumName = album.trim();
+  final names = [title.trim(), albumName];
+  final qualifiers = [
+    for (final name in names)
+      for (final match in _recordingQualifier.allMatches(name)) match[0]!,
+    if (names.any(_liveLocation.hasMatch) || _liveAlbumLabel.hasMatch(albumName))
+      'live',
+  ].join(' ');
+  return [
+    for (final tag in _recordingTagsByName.entries)
+      if (tag.value.qualifier.hasMatch(qualifiers) ||
+          names.any(tag.value.label.hasMatch))
+        tag.key,
+  ].join('|');
 }
 
 bool _sameRelease(MusicInfo a, MusicInfo b) {
@@ -348,8 +451,8 @@ bool _sameRelease(MusicInfo a, MusicInfo b) {
       _artists(a.singer) == _artists(b.singer) &&
       _normalize(a.albumName).isNotEmpty &&
       _normalize(a.albumName) == _normalize(b.albumName) &&
-      _recordingTags('${a.name} ${a.albumName}') ==
-          _recordingTags('${b.name} ${b.albumName}') &&
+      _recordingTags(a.name, a.albumName) ==
+          _recordingTags(b.name, b.albumName) &&
       _knownExplicit(a) == _knownExplicit(b);
 }
 
@@ -367,7 +470,7 @@ MusicInfo? _bestMatch(
     if (candidate.source != source ||
         candidate.id.isEmpty ||
         _normalize(candidate.name) != title ||
-        _recordingTags('${candidate.name} ${candidate.albumName}') !=
+        _recordingTags(candidate.name, candidate.albumName) !=
             _recordingTags(track.title) ||
         (track.explicit != null &&
             _knownExplicit(candidate) != null &&

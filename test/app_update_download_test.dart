@@ -186,6 +186,41 @@ void main() {
     download.dispose();
     dio.close();
   });
+  test('successful download replaces stale staged packages after restart', () async {
+    final unrelated = File('${directory.path}/exported.ipa');
+    await unrelated.writeAsBytes(_ipa());
+    final firstClient = Dio()..httpClientAdapter = _BytesAdapter(_ipa());
+    addTearDown(firstClient.close);
+    final first = IpaDownload(
+      dio: firstClient, stagingDirectory: () async => directory,
+    );
+    await first.download(_release());
+    final previous = first.file!;
+    first.dispose();
+
+    final failingClient = Dio()..httpClientAdapter = _BytesAdapter([1, 2, 3]);
+    addTearDown(failingClient.close);
+    final failing = IpaDownload(
+      dio: failingClient, stagingDirectory: () async => directory,
+    );
+    await failing.download(_release());
+    expect(failing.file, isNull);
+    expect(await previous.exists(), isTrue);
+    failing.dispose();
+
+    final next = IpaDownload(
+      dio: firstClient, stagingDirectory: () async => directory,
+    );
+    addTearDown(next.dispose);
+    await next.download(_release());
+    expect(await next.file!.exists(), isTrue);
+    expect(await previous.exists(), isFalse);
+    expect(await unrelated.exists(), isTrue);
+    expect(directory.listSync().map((entry) => entry.uri), unorderedEquals([
+      unrelated.uri, next.file!.uri,
+    ]));
+  });
+
   test('HTTP failure does not expose a partial IPA', () async {
     final dio = Dio()..httpClientAdapter = _BytesAdapter(_ipa(), status: 403);
     final download = IpaDownload(dio: dio, stagingDirectory: () async => directory);

@@ -63,6 +63,23 @@ class CoverImageSource {
         uri.host.isNotEmpty;
   }
 
+  static String? normalizeArtistUrl(String? raw) {
+    final url = normalizeUrl(raw);
+    final uri = Uri.tryParse(url ?? '');
+    if (uri == null ||
+        (uri.scheme != 'http' && uri.scheme != 'https') ||
+        uri.host.isEmpty) {
+      return null;
+    }
+    // NetEase song credits can return these shared silhouettes as artist art.
+    if (uri.host.endsWith('.music.126.net') &&
+        (uri.path.endsWith('/5639395138885805.jpg') ||
+            uri.path.endsWith('/18686200114669622.jpg'))) {
+      return null;
+    }
+    return url;
+  }
+
   static Map<String, String>? headersFor(String? url) {
     if (url == null || !url.contains('music.126.net')) return null;
     return const {

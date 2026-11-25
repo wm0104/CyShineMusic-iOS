@@ -163,8 +163,12 @@ class MusicSourceRuntime {
         fileName: normalizeResolvedFileName(result['fileName']),
       );
     } on TimeoutException {
+      await _disposeRuntime();
       throw const MusicSourceRuntimeException('音源解析超时');
     } on PlatformException catch (error) {
+      if (error.code == 'MUSIC_SOURCE_RESOLVE_TIMEOUT') {
+        await _disposeRuntime();
+      }
       throw MusicSourceRuntimeException(error.message ?? '音源解析失败');
     }
   }
@@ -265,6 +269,7 @@ class MusicSourceRuntime {
           : _decodeTextBody(response.data?.toString() ?? '');
       await _respondHttp(
         requestId,
+        token: token,
         response: {
           'statusCode': response.statusCode ?? 0,
           'statusMessage': response.statusMessage ?? '',
@@ -281,21 +286,30 @@ class MusicSourceRuntime {
       );
     } on DioException catch (error) {
       if (!CancelToken.isCancel(error)) {
-        await _respondHttp(requestId, error: error.message ?? '网络请求失败');
+        await _respondHttp(
+          requestId,
+          token: token,
+          error: error.message ?? '网络请求失败',
+        );
       }
     } catch (error) {
-      await _respondHttp(requestId, error: error.toString());
+      await _respondHttp(requestId, token: token, error: error.toString());
     } finally {
-      _httpRequests.remove(requestId);
-      _scheduleUpdateCheckIdle();
+      // The replacement runtime can reuse this request ID before the reply returns.
+      if (identical(_httpRequests[requestId], token)) {
+        _httpRequests.remove(requestId);
+        _scheduleUpdateCheckIdle();
+      }
     }
   }
 
   Future<void> _respondHttp(
     String requestId, {
+    CancelToken? token,
     Map<String, dynamic>? response,
     String? error,
   }) async {
+    if (token != null && !identical(_httpRequests[requestId], token)) return;
     try {
       await _channel.invokeMethod<void>('httpResponse', {
         'requestId': requestId,

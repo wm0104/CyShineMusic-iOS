@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -9,11 +10,14 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cy_shine_music/core/storage/settings_store.dart';
 import 'package:cy_shine_music/core/services/embedded_artwork_cache.dart';
 import 'package:cy_shine_music/features/playlists/playlist_detail_page.dart';
+import 'package:cy_shine_music/features/playlists/playlist_management_page.dart';
 import 'package:cy_shine_music/features/playlists/playlist_models.dart';
 import 'package:cy_shine_music/features/playlists/playlist_store.dart';
 import 'package:cy_shine_music/features/shell/shell_toolbar_visibility.dart';
+import 'package:cy_shine_music/features/player/player_audio_handler.dart';
 import 'package:cy_shine_music/features/player/player_controller.dart';
 import 'package:cy_shine_music/features/songs/widgets/songs_placeholders.dart';
+import 'package:cy_shine_music/router.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -118,6 +122,43 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('iOS edge back exits playlist modes before leaving the detail', (
+    tester,
+  ) async {
+    final container = await _pumpPlaylist(tester, withAppRouter: true);
+
+    Future<void> swipeBack() async {
+      await tester.dragFrom(const Offset(4, 400), const Offset(210, 0));
+      await tester.pumpAndSettle();
+    }
+
+    await tester.tap(find.byTooltip('搜索歌单歌曲'));
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('退出搜索'), findsOneWidget);
+    await swipeBack();
+    expect(find.byTooltip('退出搜索'), findsNothing);
+    expect(find.byType(PlaylistDetailPage), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('playlist-batch-button')));
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('退出批量管理'), findsOneWidget);
+    await swipeBack();
+    expect(find.byTooltip('退出批量管理'), findsNothing);
+    expect(find.byType(PlaylistDetailPage), findsOneWidget);
+
+    await _startOrdering(tester);
+    await _moveFirstToEnd(tester);
+    await swipeBack();
+    expect(find.byType(ReorderableDragStartListener), findsNothing);
+    expect(find.byType(PlaylistDetailPage), findsOneWidget);
+    expect(container.read(localPlaylistsProvider).single.customTrackOrder, isNull);
+    _expectOrder(tester, ['Alpha', 'Bravo', 'Charlie']);
+
+    await swipeBack();
+    expect(find.byType(PlaylistManagementPage), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('concurrent removal rejects stale completion instead of losing songs', (tester) async {
     final container = await _pumpPlaylist(tester);
     await _startOrdering(tester);
@@ -142,7 +183,10 @@ void main() {
   });
 }
 
-Future<ProviderContainer> _pumpPlaylist(WidgetTester tester, {Size size = const Size(390, 1000)}) async {
+Future<ProviderContainer> _pumpPlaylist(WidgetTester tester, {
+  Size size = const Size(390, 1000),
+  bool withAppRouter = false,
+}) async {
   tester.view.devicePixelRatio = 1;
   tester.view.physicalSize = size;
   addTearDown(() {
@@ -175,17 +219,33 @@ Future<ProviderContainer> _pumpPlaylist(WidgetTester tester, {Size size = const 
     ).toJson())],
   });
   final prefs = await SharedPreferences.getInstance();
+  final handler = withAppRouter ? PlayerAudioHandler() : null;
+  final router = withAppRouter
+      ? createAppRouter(initialLocation: '/playlists/order?from=manage')
+      : null;
   final container = ProviderContainer(overrides: [
     sharedPreferencesProvider.overrideWithValue(prefs),
-    playerControllerProvider.overrideWith((ref) => throw StateError('Ordering must not access the player or its queue')),
+    if (handler != null)
+      playerAudioHandlerProvider.overrideWithValue(handler)
+    else
+      playerControllerProvider.overrideWith((ref) => throw StateError('Ordering must not access the player or its queue')),
   ]);
-  addTearDown(container.dispose);
+  addTearDown(() {
+    router?.dispose();
+    container.dispose();
+    if (handler != null) unawaited(handler.disposeHandler());
+  });
   if (size.width >= 840) {
     await container.read(settingsProvider.notifier).setCarPadModeEnabled(true);
   }
   await tester.pumpWidget(UncontrolledProviderScope(
     container: container,
-    child: MaterialApp(home: const PlaylistDetailPage(playlistId: 'order')),
+    child: router == null
+        ? MaterialApp(home: const PlaylistDetailPage(playlistId: 'order'))
+        : MaterialApp.router(
+            routerConfig: router,
+            theme: ThemeData(platform: TargetPlatform.iOS),
+          ),
   ));
   await tester.pumpAndSettle();
   return container;

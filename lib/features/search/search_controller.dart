@@ -126,10 +126,9 @@ class SearchController extends Notifier<SearchState> {
       settingsProvider.select((settings) => settings.enabledSearchSources),
       (previous, next) {
         _activeRequest = Object();
-        _responseCache.removeWhere(
-          (query, _) =>
-              query.source == MusicSource.all ||
-              (query.source != MusicSource.all && !next.contains(query.source)),
+        _invalidateQueries(
+          (query) =>
+              query.source == MusicSource.all || !next.contains(query.source),
         );
         final activeSource = state.category == SearchCategory.artists
             ? _artistSource(state.source, next)
@@ -147,7 +146,7 @@ class SearchController extends Notifier<SearchState> {
           response: null,
         );
         if (keyword.trim().isNotEmpty && _canSearch(activeSource)) {
-          unawaited(search(keyword: keyword, source: activeSource));
+          _restartSearchWithNewSettings(keyword, activeSource);
         }
       },
     );
@@ -160,19 +159,31 @@ class SearchController extends Notifier<SearchState> {
     ref.listen<List<MusicSource>>(
       settingsProvider.select((settings) => settings.discoverySourceOrder),
       (previous, next) {
-        if (state.category == SearchCategory.artists) return;
-        _activeRequest = Object();
-        _responseCache.removeWhere(
-          (query, _) => query.source == MusicSource.all,
-        );
-        if (state.isSearchActive &&
+        _invalidateQueries((query) => query.source == MusicSource.all);
+        if (state.category == SearchCategory.songs &&
             state.source == MusicSource.all &&
             state.keyword.trim().isNotEmpty) {
-          unawaited(search(keyword: state.keyword, source: MusicSource.all));
+          _restartSearchWithNewSettings(state.keyword, MusicSource.all);
         }
       },
     );
     return SearchState(source: _defaultSearchSource());
+  }
+
+  void _invalidateQueries(bool Function(SearchQuery) matches) {
+    _responseCache.removeWhere((query, _) => matches(query));
+    _inFlight.removeWhere((query, _) => matches(query));
+  }
+
+  void _restartSearchWithNewSettings(String keyword, MusicSource source) {
+    final request = Object();
+    _activeRequest = request;
+    // The API also watches these settings and invalidates after this listener.
+    scheduleMicrotask(() {
+      if (identical(request, _activeRequest)) {
+        unawaited(search(keyword: keyword, source: source));
+      }
+    });
   }
 
   void setSource(MusicSource source) {
@@ -309,7 +320,9 @@ class SearchController extends Notifier<SearchState> {
     );
     try {
       final result = await future;
-      _responseCache[query] = result;
+      if (identical(_inFlight[query], future) && !result.hasFailedSources) {
+        _responseCache[query] = result;
+      }
       if (!identical(request, _activeRequest)) return;
       unawaited(
         AppLogger.write(

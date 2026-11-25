@@ -19,6 +19,7 @@ import '../songs/songs_toolbar_state.dart';
 import 'player_pull_scope.dart';
 import 'player_transition.dart';
 import 'shell_bottom_area.dart';
+import 'shell_edge_back.dart';
 import 'shell_route_utils.dart';
 import 'shell_toolbar_visibility.dart';
 import 'tab_location_memory.dart';
@@ -355,9 +356,10 @@ class _AppShellState extends ConsumerState<AppShell>
     });
   }
 
-  Future<bool> _handleBackButton() async {
+  Future<bool> _handleBackButton([BuildContext? gesturePage]) async {
     final navigator = Navigator.of(context, rootNavigator: true);
     if (navigator.canPop()) {
+      if (gesturePage != null) return false;
       await navigator.maybePop();
       return true;
     }
@@ -396,7 +398,16 @@ class _AppShellState extends ConsumerState<AppShell>
     }
 
     _releaseRouteFocus();
-    if (_isTopLevelMenuLocation(widget.location)) {
+    if (gesturePage != null) {
+      final location = widget.routeLocation;
+      // The branch navigator honors page-local pop handling, including
+      // playlist ordering and artist pages' return-to-player callbacks.
+      if (await Navigator.of(gesturePage).maybePop()) return true;
+      if (!mounted || !gesturePage.mounted || widget.routeLocation != location) {
+        return false;
+      }
+    }
+    if (isTopLevelShellLocation(widget.location)) {
       await _handleTopLevelBack();
     } else if (widget.location == '/downloads' ||
         widget.location == '/songs/search') {
@@ -710,7 +721,11 @@ class _AppShellState extends ConsumerState<AppShell>
                                 _finishToolbarScrollSequence(),
                             child: NotificationListener<ScrollNotification>(
                               onNotification: _handleToolbarScrollNotification,
-                              child: widget.child,
+                              child: ShellEdgeBackScope(
+                                location: widget.location,
+                                onBack: _handleBackButton,
+                                child: widget.child,
+                              ),
                             ),
                           ),
                         ),
@@ -816,7 +831,7 @@ class _AppShellState extends ConsumerState<AppShell>
             final p = _pull.value;
             final visible = p > 0 || isPlayer;
             final interactive = visible && _settleTarget != 0;
-            return IgnorePointer(
+            final surface = IgnorePointer(
               ignoring: !interactive,
               child: ExcludeSemantics(
                 excluding: !interactive,
@@ -850,6 +865,15 @@ class _AppShellState extends ConsumerState<AppShell>
                   ),
                 ),
               ),
+            );
+            return ShellEdgeBack(
+              canStart: () =>
+                  widget.location == '/player' &&
+                  !_pullActive &&
+                  _settleTarget == null &&
+                  !Navigator.of(context, rootNavigator: true).canPop(),
+              onBack: _dismissPlayer,
+              child: surface,
             );
           },
         ),
@@ -918,10 +942,6 @@ class _AppShellState extends ConsumerState<AppShell>
 }
 
 const _doubleBackExitWindow = Duration(seconds: 2);
-
-bool _isTopLevelMenuLocation(String location) {
-  return location == '/' || location == '/songs' || location == '/settings';
-}
 
 const _appTaskChannel = MethodChannel('cy_shine_music/app_task');
 

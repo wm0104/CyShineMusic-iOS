@@ -5,6 +5,7 @@ import 'package:cy_shine_music/core/models/download_capabilities.dart';
 import 'package:cy_shine_music/core/models/enums.dart';
 import 'package:cy_shine_music/core/models/music_info.dart';
 import 'package:cy_shine_music/core/models/online_collection_kind.dart';
+import 'package:cy_shine_music/core/models/playlist_info.dart';
 import 'package:cy_shine_music/core/models/search_response.dart';
 import 'package:cy_shine_music/core/sdk/wy_artist_sdk.dart';
 import 'package:cy_shine_music/core/music_sources/music_source_controller.dart';
@@ -116,6 +117,75 @@ void main() {
     expect(await details(42), [for (int i = 0; i < 42; i++) '热歌 $i']);
     expect(api.offsets, [0, 40]);
   });
+
+  test(
+    'artist total stays at the provider count after deduplicating the final page',
+    () async {
+      final api = _ArtistApi()..repeatFinalTrack = true;
+      final container = ProviderContainer(
+        overrides: [musicApiProvider.overrideWithValue(api)],
+      );
+      addTearDown(container.dispose);
+      final first = await container.read(
+        onlinePlaylistDetailProvider(
+          const OnlinePlaylistKey(
+            source: MusicSource.wy,
+            id: '9',
+            kind: OnlineCollectionKind.artist,
+          ),
+        ).future,
+      );
+      final complete = await container.read(
+        onlinePlaylistDetailProvider(
+          const OnlinePlaylistKey(
+            source: MusicSource.wy,
+            id: '9',
+            kind: OnlineCollectionKind.artist,
+            maxTracks: 42,
+          ),
+        ).future,
+      );
+      expect(first.totalTracks, 42);
+      expect(complete.tracks.length, 41);
+      expect(complete.totalTracks, first.totalTracks);
+      expect(first.hasMoreTracks, isTrue);
+      expect(complete.hasMoreTracks, isFalse);
+    },
+  );
+
+  test(
+    'artist pagination accepts updated totals and stops at an empty page',
+    () async {
+      final api = _ArtistApi()
+        ..firstTotal = 50
+        ..laterTotal = 120
+        ..emptyPageOffset = 80;
+      final container = ProviderContainer(
+        overrides: [musicApiProvider.overrideWithValue(api)],
+      );
+      addTearDown(container.dispose);
+      Future<PlaylistInfo> detail(int maxTracks) => container.read(
+        onlinePlaylistDetailProvider(
+          OnlinePlaylistKey(
+            source: MusicSource.wy,
+            id: '9',
+            kind: OnlineCollectionKind.artist,
+            maxTracks: maxTracks,
+          ),
+        ).future,
+      );
+
+      expect((await detail(40)).totalTracks, 50);
+      final updated = await detail(50);
+      expect(updated.totalTracks, 120);
+      expect(updated.tracks.length, 80);
+      expect(updated.hasMoreTracks, isTrue);
+      final exhausted = await detail(90);
+      expect(exhausted.totalTracks, 120);
+      expect(exhausted.hasMoreTracks, isFalse);
+      expect(api.offsets, [0, 40, 80]);
+    },
+  );
 
   test('未完成的歌手请求与歌曲缓存相互独立，仅用启用的歌手平台', () async {
     final api = _ArtistApi()..pendingArtistSearch = Completer<void>();
@@ -321,6 +391,10 @@ class _ArtistPlayer extends PlayerController {
 class _ArtistApi extends MusicApi {
   Completer<void>? pendingArtistSearch;
   bool failSecondPage = false;
+  bool repeatFinalTrack = false;
+  int firstTotal = 42;
+  int laterTotal = 42;
+  int? emptyPageOffset;
   int artistSearches = 0;
   int songSearches = 0;
   final offsets = <int>[];
@@ -375,14 +449,19 @@ class _ArtistApi extends MusicApi {
       failSecondPage = false;
       throw Exception('临时网络错误');
     }
+    final total = offset == emptyPageOffset
+        ? 0
+        : offset == 0
+        ? firstTotal
+        : laterTotal;
     return ArtistTrackPage(
       offset: offset,
-      total: 42,
+      total: total,
       artistName: 'B',
       tracks: [
-        for (int i = offset; i < offset + limit && i < 42; i++)
+        for (int i = offset; i < offset + limit && i < total; i++)
           MusicInfo.fromJson({
-            'id': 'wy_$i',
+            'id': 'wy_${repeatFinalTrack && i == 41 ? 39 : i}',
             'name': '热歌 $i',
             'singer': 'B',
             'source': 'wy',

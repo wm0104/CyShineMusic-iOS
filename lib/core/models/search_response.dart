@@ -11,6 +11,7 @@ class SearchResponse {
     required this.allPage,
     required this.total,
     required this.source,
+    this.hasFailedSources = false,
   });
 
   final List<MusicInfo> list;
@@ -20,6 +21,7 @@ class SearchResponse {
   final int allPage;
   final int total;
   final MusicSource source;
+  final bool hasFailedSources;
 
   factory SearchResponse.fromJson(Map<String, dynamic> json) {
     final listRaw = json['list'];

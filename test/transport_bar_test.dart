@@ -174,6 +174,7 @@ void main() {
 
   testWidgets('保留拖动时间气泡与无障碍时间语义', (tester) async {
     await _pumpTransport(tester);
+    expect(find.text('03:00'), findsOneWidget);
     _startDrag(tester, 65000);
     await tester.pump();
     final slider = _slider(tester);
@@ -186,6 +187,54 @@ void main() {
           .showValueIndicator,
       ShowValueIndicator.onDrag,
     );
+  });
+
+  testWidgets('iOS 剩余时间跟随拖动和等待 seek 时展示的位置', (tester) async {
+    final controller = await _pumpTransport(
+      tester,
+      platform: TargetPlatform.iOS,
+    );
+    expect(find.text('00:20'), findsOneWidget);
+    expect(find.text('−2:40'), findsOneWidget);
+
+    _startDrag(tester, 156000);
+    await tester.pump();
+    expect(find.text('02:36'), findsOneWidget);
+    expect(find.text('−0:24'), findsOneWidget);
+    expect(_slider(tester).label, '02:36');
+    expect(_slider(tester).semanticFormatterCallback!(156000), '02:36');
+    expect(controller.requests, isEmpty);
+
+    final seek = _releaseDrag(tester, 156000);
+    await tester.pump();
+    expect(find.text('−0:24'), findsOneWidget);
+    expect(controller.requests, hasLength(1));
+
+    controller.completeSeek(0);
+    await seek;
+    await tester.pump();
+    expect(find.text('−0:24'), findsOneWidget);
+  });
+
+  testWidgets('iOS 在曲终和时长未知时显示零剩余时间', (tester) async {
+    final controller = await _pumpTransport(
+      tester,
+      platform: TargetPlatform.iOS,
+    );
+    controller.seedTrack(
+      'completed',
+      position: const Duration(milliseconds: 179500),
+    );
+    await tester.pump();
+    expect(find.text('−0:01'), findsOneWidget);
+
+    controller.seedTrack('completed', position: const Duration(minutes: 3));
+    await tester.pump();
+    expect(find.text('0:00'), findsOneWidget);
+
+    controller.seedTrack('unknown', duration: Duration.zero);
+    await tester.pump();
+    expect(find.text('0:00'), findsOneWidget);
   });
 }
 
@@ -214,6 +263,7 @@ Future<void> _releaseDrag(WidgetTester tester, double target) {
 Future<_TestPlayerController> _pumpTransport(
   WidgetTester tester, {
   bool disableAnimations = false,
+  TargetPlatform? platform,
 }) async {
   final preferences = await SharedPreferences.getInstance();
   final audioHandler = PlayerAudioHandler();
@@ -232,6 +282,7 @@ Future<_TestPlayerController> _pumpTransport(
       child: MaterialApp(
         theme: ThemeData(
           colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
+          platform: platform,
         ),
         home: MediaQuery(
           data: MediaQueryData(disableAnimations: disableAnimations),
@@ -254,7 +305,11 @@ class _TestPlayerController extends PlayerController {
   final requests =
       <({String? trackId, Duration position, Completer<void> completion})>[];
 
-  void seedTrack(String id, {Duration position = const Duration(seconds: 20)}) {
+  void seedTrack(
+    String id, {
+    Duration position = const Duration(seconds: 20),
+    Duration duration = const Duration(minutes: 3),
+  }) {
     state = PlayerState(
       track: PlayerTrack(
         id: id,
@@ -267,7 +322,7 @@ class _TestPlayerController extends PlayerController {
         localPath: '$id.flac',
       ),
       position: position,
-      duration: const Duration(minutes: 3),
+      duration: duration,
     );
   }
 

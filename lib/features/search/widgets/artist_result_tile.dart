@@ -1,22 +1,30 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/models/artist_info.dart';
 import '../../../core/models/online_collection_kind.dart';
 import '../../../core/models/playlist_summary.dart';
 import '../../../core/ui/container_transform.dart';
+import '../../../core/ui/cover_image_source.dart';
 import '../../discovery/discovery_controller.dart';
 import '../../discovery/widgets/discovery_playlist_cover.dart';
 
 /// The same artist row is used by search and the current-track artist list.
-class ArtistResultTile extends StatelessWidget {
+class ArtistResultTile extends ConsumerWidget {
   const ArtistResultTile({super.key, required this.artist, this.from});
   final ArtistInfo artist;
   final String? from;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final scheme = Theme.of(context).colorScheme;
+    final coverUrl = from == 'track-artists'
+        ? CoverImageSource.normalizeArtistUrl(artist.coverUrl) ??
+            ref.watch(artistArtworkProvider((source: artist.source, id: artist.id,
+              name: artist.name.trim())))
+                .asData?.value
+        : artist.coverUrl;
     return ListTile(
       key: ValueKey('artist-${artist.source.code}-${artist.id}'),
       minTileHeight: 62,
@@ -29,7 +37,7 @@ class ArtistResultTile extends StatelessWidget {
         child: ClipRRect(
           borderRadius: BorderRadius.circular(8),
           child: SizedBox.square(dimension: 44,
-            child: DiscoveryPlaylistCover(url: artist.coverUrl, size: 44)),
+            child: DiscoveryPlaylistCover(url: coverUrl, size: 44)),
         ),
       ),
       title: Text(artist.name, maxLines: 1, overflow: TextOverflow.ellipsis,
@@ -42,7 +50,7 @@ class ArtistResultTile extends StatelessWidget {
         '${from == null ? '' : '?from=${Uri.encodeQueryComponent(from!)}'}',
         extra: ContainerTransformExtra(
           PlaylistSummary(id: artist.id, name: artist.name, source: artist.source,
-            coverUrl: artist.coverUrl),
+            coverUrl: coverUrl),
           origin: ContainerTransformOrigin.capture(context, color: scheme.surface),
         ),
       ),

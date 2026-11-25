@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/api/music_api.dart';
 import '../shell/shell_bottom_area.dart';
+import '../../core/models/artist_info.dart';
 import '../../core/models/enums.dart';
 import '../../core/models/music_info.dart';
 import '../../core/models/online_collection_kind.dart';
@@ -15,11 +16,13 @@ import '../../core/storage/settings_store.dart';
 import '../../core/ui/app_toast.dart';
 import '../../core/ui/app_refresh_indicator.dart';
 import '../../core/ui/app_scrollbar.dart';
+import '../../core/ui/cover_image_source.dart';
 import '../../core/ui/cover_placeholder.dart';
 import '../../core/ui/car_display_layout.dart';
 import '../downloads/download_history_store.dart';
 import '../downloads/download_progress.dart';
 import '../music_sources/music_source_action_guard.dart';
+import '../player/player_artist_resolver.dart';
 import '../player/player_controller.dart';
 import '../playlists/playlist_models.dart';
 import '../playlists/playlist_browser_sheet.dart';
@@ -40,6 +43,7 @@ class OnlinePlaylistDetailPage extends ConsumerStatefulWidget {
     this.kind = OnlineCollectionKind.playlist,
     this.summary,
     this.onBack,
+    this.fromPlayback = false,
   });
 
   final MusicSource source;
@@ -47,6 +51,7 @@ class OnlinePlaylistDetailPage extends ConsumerStatefulWidget {
   final OnlineCollectionKind kind;
   final PlaylistSummary? summary;
   final VoidCallback? onBack;
+  final bool fromPlayback;
 
   @override
   ConsumerState<OnlinePlaylistDetailPage> createState() =>
@@ -83,6 +88,28 @@ class _OnlinePlaylistDetailPageState
 
   String get _detailLabel => '${widget.kind.label}详情';
   bool get _artist => widget.kind == OnlineCollectionKind.artist;
+
+  ArtistInfo? get _playerArtist {
+    final artist = ref
+        .read(playerArtistSelectionProvider)
+        ?.resolution
+        .singleArtist;
+    return artist?.source == widget.source && artist?.id == widget.playlistId
+        ? artist
+        : null;
+  }
+
+  String? _playbackArtistCover(PlaylistInfo? loaded) {
+    final artist = _playerArtist;
+    final cover = CoverImageSource.normalizeArtistUrl(_summary?.coverUrl) ??
+        CoverImageSource.normalizeArtistUrl(artist?.coverUrl) ??
+        CoverImageSource.normalizeArtistUrl(loaded?.coverUrl);
+    if (cover != null) return cover;
+    final name = (_summary?.name ?? artist?.name ?? loaded?.name)?.trim();
+    if (name == null || name.isEmpty || name == _detailLabel) return null;
+    return ref.watch(artistArtworkProvider((source: widget.source,
+      id: widget.playlistId, name: name))).asData?.value;
+  }
 
   void _invalidateDetail({bool retry = false}) {
     if (_artist) {
@@ -157,8 +184,11 @@ class _OnlinePlaylistDetailPageState
         CarDisplayLayout.wideOf(context);
     final detail = ref.watch(onlinePlaylistDetailProvider(_key));
     final loaded = detail.asData?.value;
+    final coverUrl = _artist && widget.fromPlayback
+        ? _playbackArtistCover(loaded)
+        : _summary?.coverUrl;
     if (loaded != null) {
-      _lastPlaylist = _withDiscoveryArtwork(loaded);
+      _lastPlaylist = _withDiscoveryArtwork(loaded, coverUrl);
       // Restore the same cached range before PageStorage restores its offset.
       ref.read(onlinePlaylistTrackLimitCacheProvider)[_identity] = _trackLimit;
     }
@@ -178,6 +208,7 @@ class _OnlinePlaylistDetailPageState
     return detail.when(
       loading: () => _DetailLoading(
         summary: _summary,
+        coverUrl: coverUrl,
         source: widget.source,
         playlistId: widget.playlistId,
         kind: widget.kind,
@@ -186,6 +217,7 @@ class _OnlinePlaylistDetailPageState
       ),
       error: (error, _) => _DetailError(
         summary: _summary,
+        coverUrl: coverUrl,
         source: widget.source,
         playlistId: widget.playlistId,
         kind: widget.kind,
@@ -196,27 +228,30 @@ class _OnlinePlaylistDetailPageState
       ),
       data: (playlist) => _buildPlaylist(
         context,
-        _withDiscoveryArtwork(playlist),
+        _withDiscoveryArtwork(playlist, coverUrl),
         carPadModeEnabled: carPadModeEnabled,
       ),
     );
   }
 
-  PlaylistInfo _withDiscoveryArtwork(PlaylistInfo playlist) {
+  PlaylistInfo _withDiscoveryArtwork(PlaylistInfo playlist, String? coverUrl) {
     final summary = _summary;
-    if (summary == null) return playlist;
+    final artwork = (_artist && widget.fromPlayback) || coverUrl?.trim().isNotEmpty == true
+        ? coverUrl
+        : playlist.coverUrl;
+    final name = _artist ? summary?.name ?? playlist.name : playlist.name;
+    if (artwork == playlist.coverUrl && name == playlist.name) return playlist;
     return PlaylistInfo(
       id: playlist.id,
-      name: _artist ? summary.name : playlist.name,
+      name: name,
       source: playlist.source,
       tracks: playlist.tracks,
-      coverUrl: summary.coverUrl?.trim().isNotEmpty == true
-          ? summary.coverUrl
-          : playlist.coverUrl,
+      coverUrl: artwork,
       creator: playlist.creator,
       description: playlist.description,
       playCount: playlist.playCount,
       trackCount: playlist.trackCount,
+      hasMoreTracks: playlist.hasMoreTracks,
     );
   }
 
@@ -284,9 +319,7 @@ class _OnlinePlaylistDetailPageState
           }
 
           final hasTrackFooter =
-              loadingMore ||
-              (loadMoreError != null &&
-                  playlist.tracks.length < playlist.totalTracks);
+              loadingMore || (loadMoreError != null && playlist.hasMoreTracks);
           final trackSlivers = <Widget>[
             SliverToBoxAdapter(
               child: _PlaylistTracksHeading(
@@ -351,8 +384,7 @@ class _OnlinePlaylistDetailPageState
               ),
             if (loadingMore)
               const SliverToBoxAdapter(child: _LoadMoreTracksIndicator())
-            else if (loadMoreError != null &&
-                playlist.tracks.length < playlist.totalTracks)
+            else if (loadMoreError != null && playlist.hasMoreTracks)
               SliverToBoxAdapter(
                 child: _LoadMoreTracksError(
                   message: loadMoreError,
@@ -467,7 +499,7 @@ class _OnlinePlaylistDetailPageState
 
     openPlayer(context, returnLocation: _returnLocation);
     final playback = player.playFromPlaylistQueue(entry, queue);
-    if (playlist.tracks.length < playlist.totalTracks) {
+    if (playlist.hasMoreTracks) {
       unawaited(
         _expandOnlinePlaylistQueue(
           api: api,
@@ -505,7 +537,7 @@ class _OnlinePlaylistDetailPageState
                 input: playlist.id,
                 source: playlist.source,
               );
-        final fullPlaylist = _withDiscoveryArtwork(loaded);
+        final fullPlaylist = _withDiscoveryArtwork(loaded, _summary?.coverUrl);
         await notifier.importOnline(fullPlaylist);
       } else {
         await notifier.delete(savedPlaylist.id);
@@ -540,7 +572,7 @@ class _OnlinePlaylistDetailPageState
 
   void _loadMoreTracks(PlaylistInfo playlist) {
     if (!TickerMode.valuesOf(context).enabled) return;
-    if (playlist.tracks.length >= playlist.totalTracks) return;
+    if (!playlist.hasMoreTracks) return;
     if (_trackLimit >= playlist.totalTracks) return;
     final next = _trackLimit + onlinePlaylistDetailTrackPageSize;
     final target = next > playlist.totalTracks ? playlist.totalTracks : next;
@@ -621,6 +653,7 @@ class _OnlinePlaylistTrackTileState
 class _DetailLoading extends StatelessWidget {
   const _DetailLoading({
     required this.summary,
+    required this.coverUrl,
     required this.source,
     required this.playlistId,
     required this.kind,
@@ -629,6 +662,7 @@ class _DetailLoading extends StatelessWidget {
   });
 
   final PlaylistSummary? summary;
+  final String? coverUrl;
   final MusicSource source;
   final String playlistId;
   final OnlineCollectionKind kind;
@@ -639,7 +673,7 @@ class _DetailLoading extends StatelessWidget {
   Widget build(BuildContext context) {
     final item = summary;
     final artworkProvider = networkPlaylistArtworkProvider(
-      item?.coverUrl,
+      coverUrl,
       size: discoveryPlaylistArtworkSize,
     );
     final wide = playlistDetailUsesWideLayout(
@@ -657,7 +691,7 @@ class _DetailLoading extends StatelessWidget {
       cacheKey: _onlineArtworkCacheKey(
         source,
         playlistId,
-        item?.coverUrl,
+        coverUrl,
         kind: kind,
       ),
       immersiveStatusBar: !wide,
@@ -772,6 +806,7 @@ class _DetailLoading extends StatelessWidget {
 class _DetailError extends StatelessWidget {
   const _DetailError({
     required this.summary,
+    required this.coverUrl,
     required this.source,
     required this.playlistId,
     required this.kind,
@@ -782,6 +817,7 @@ class _DetailError extends StatelessWidget {
   });
 
   final PlaylistSummary? summary;
+  final String? coverUrl;
   final MusicSource source;
   final String playlistId;
   final OnlineCollectionKind kind;
@@ -794,7 +830,7 @@ class _DetailError extends StatelessWidget {
   Widget build(BuildContext context) {
     final item = summary;
     final artworkProvider = networkPlaylistArtworkProvider(
-      item?.coverUrl,
+      coverUrl,
       size: discoveryPlaylistArtworkSize,
     );
     final wide = playlistDetailUsesWideLayout(
@@ -833,7 +869,7 @@ class _DetailError extends StatelessWidget {
       cacheKey: _onlineArtworkCacheKey(
         source,
         playlistId,
-        item?.coverUrl,
+        coverUrl,
         kind: kind,
       ),
       immersiveStatusBar: !wide,

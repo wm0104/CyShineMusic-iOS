@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/storage/settings_store.dart';
 import 'shell_bottom_area.dart';
+import 'shell_edge_back.dart';
 import 'shell_route_utils.dart';
 import 'widgets/shell_header.dart';
 
@@ -37,7 +38,7 @@ class ShellPageFrame extends StatelessWidget {
     final hidesHeader =
         isDiscoveryLocation(location) ||
         isImmersivePlaylistDetailLocation(location);
-    return Padding(
+    final content = Padding(
       padding: EdgeInsets.only(bottom: bottomPadding),
       child: Column(
         children: [
@@ -49,6 +50,22 @@ class ShellPageFrame extends StatelessWidget {
           Expanded(child: child),
         ],
       ),
+    );
+    final back = ShellEdgeBackScope.maybeOf(context);
+    final route = ModalRoute.of(context);
+    if (back == null || route == null || isTopLevelShellLocation(location)) {
+      return content;
+    }
+    return ShellEdgeBack(
+      canStart: () =>
+          back.location == location &&
+          route.isCurrent &&
+          route.animation?.isCompleted != false &&
+          route.secondaryAnimation?.isDismissed != false &&
+          !route.willHandlePopInternally &&
+          !Navigator.of(context, rootNavigator: true).canPop(),
+      onBack: () => back.onBack(context),
+      child: content,
     );
   }
 }

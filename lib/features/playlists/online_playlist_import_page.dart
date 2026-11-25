@@ -151,6 +151,7 @@ class _OnlinePlaylistImportPageState
     _requestToken = request;
     setState(() { _loading = true; _error = null; _progress = null; });
     try {
+      SpotifyMatchIssues? matchIssues;
       final tracks = await ref.read(spotifyPlaylistImporterProvider).rematchUnmatched(
         matchingPreview.tracks,
         source: _matchSource,
@@ -158,14 +159,23 @@ class _OnlinePlaylistImportPageState
         onProgress: (done, total) {
           if (_requestActive(request)) setState(() => _progress = '正在匹配音源 · $done / $total');
         },
+        onIssues: (issues) => matchIssues = issues,
       );
       if (!_requestActive(request)) return;
       setState(() {
         _rematchSnapshot ??= current?.tracks ?? matchingPreview.tracks;
-        _spotify = SpotifyPlaylistPreview(id: matchingPreview.id, name: matchingPreview.name,
-          tracks: tracks, total: matchingPreview.total, creator: matchingPreview.creator, coverUrl: matchingPreview.coverUrl);
+        _spotify = SpotifyPlaylistPreview(
+          id: matchingPreview.id,
+          name: matchingPreview.name,
+          tracks: tracks,
+          total: matchingPreview.total,
+          creator: matchingPreview.creator,
+          coverUrl: matchingPreview.coverUrl,
+          matchIssues: matchIssues,
+        );
       });
       if (_savedPlaylistId == null) _rememberDraft();
+      _showSpotifyMatchIssues(matchIssues);
     } catch (error) {
       if (_requestActive(request)) showAppToast(context, describeDioError(error), type: AppToastType.error);
     } finally {
@@ -363,6 +373,7 @@ class _OnlinePlaylistImportPageState
           _spotify = spotify;
         });
         _rememberDraft();
+        _showSpotifyMatchIssues(spotify.matchIssues);
         return;
       }
       final playlist = await ref
@@ -386,6 +397,14 @@ class _OnlinePlaylistImportPageState
         setState(() { _loading = false; _progress = null; });
       }
     }
+  }
+
+  void _showSpotifyMatchIssues(SpotifyMatchIssues? issues) {
+    if (issues == null) return;
+    final message = issues.rateLimited
+        ? '搜索请求过于频繁，${issues.failed + issues.unfinished} 首未完成搜索，请稍后补配'
+        : '${issues.failed} 首搜索失败，可补配未匹配项';
+    showAppToast(context, message, type: AppToastType.warning);
   }
 
   Future<void> _savePlaylist() async {
