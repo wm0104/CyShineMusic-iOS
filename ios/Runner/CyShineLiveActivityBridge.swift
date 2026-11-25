@@ -23,12 +23,9 @@
 import ActivityKit
 import Flutter
 import Foundation
-// MPNowPlayingInfoCenter / MPMediaItemArtwork 在 MediaPlayer 里。
-// 锁屏播放卡片靠它，与 ActivityKit 无关 —— 缺这个 import 会报一串
-// "Cannot find 'MPMediaItemPropertyArtist' in scope"。
-import MediaPlayer
 import UIKit
 import UserNotifications
+import WidgetKit
 
 @available(iOS 16.2, *)
 final class CyShineLiveActivityBridge: NSObject {
@@ -38,6 +35,8 @@ final class CyShineLiveActivityBridge: NSObject {
 
   /// 与 MusicHomeWidgetPlugin / Widget 扩展里保持一致。
   static let appGroupIdentifier = "group.com.cyshine.music"
+  private static let sharedContainerURL = FileManager.default.containerURL(
+    forSecurityApplicationGroupIdentifier: appGroupIdentifier)
 
   private static let artworkDirectory = "artwork"
   private static let maxArtworkPixels: CGFloat = 256
@@ -48,6 +47,8 @@ final class CyShineLiveActivityBridge: NSObject {
   /// 进入前台前发起活动会被系统拒绝（ActivityKit 要求前台）。
   /// 这里把待发起的状态留住，回到前台时补发。
   private var pendingStart: [String: Any]?
+  private var lastArgs: [String: Any]?
+  private var lastState: CyShineActivityAttributes.ContentState?
   private var foregroundObserver: NSObjectProtocol?
 
   // MARK: - 注册
@@ -104,24 +105,26 @@ final class CyShineLiveActivityBridge: NSObject {
       Self.ensureNotificationAuthorization()
       CyShineNativeLog.write("live-activity", Self.diagnostics())
       let enabled = ActivityAuthorizationInfo().areActivitiesEnabled
-      if !enabled && Self.isNotificationAuthorizationPending {
-        // 弹窗已弹、用户还没回答：这不是「用户拒绝」。先按可用放行，
-        // 让 Dart 挂上监听；授权结果回来后由 onAuthorizationResolved 主动重试。
-        result(true)
-      } else {
-        result(enabled)
-      }
+      result(enabled || Self.isNotificationAuthorizationPending || Self.sharedContainerURL != nil)
 
-    case "start":
+    case "start", "update":
       guard let args = call.arguments as? [String: Any] else {
-        result(FlutterError(code: "INVALID_ARGS", message: "缺少参数", details: nil))
+        result(FlutterError(code: "INVALID_ARGS", message: "缺少播放状态", details: nil))
         return
       }
-      // 兜底再问一次（幂等）。正常路径下 isSupported 已经问过。
+      do {
+        try syncSharedPlayback(args)
+      } catch {
+        result(FlutterError(code: "LIVE_ACTIVITY_FAILED",
+                            message: error.localizedDescription, details: Self.describe(error)))
+        return
+      }
+      if call.method == "update" {
+        applyUpdate(args)
+        result(true)
+        return
+      }
       Self.ensureNotificationAuthorization()
-      // 用户在「设置 → 栖弦 → 实时活动」里真的关掉了：不是错误，不要回灌
-      // FlutterError —— Dart 会把它写进日志，看起来像故障。
-      // 注意这里**不能**把「还没问」也归到这个分支（那正是死锁的成因）。
       if ActivityAuthorizationInfo().areActivitiesEnabled == false,
          Self.isNotificationAuthorizationPending == false {
         CyShineNativeLog.write("live-activity",
@@ -133,22 +136,16 @@ final class CyShineLiveActivityBridge: NSObject {
         applyStart(args, result: result)
       } else {
         pendingStart = args
-        CyShineNativeLog.write("live-activity",
-                               "App 不在前台，已暂存发起，回到前台再补")
+        CyShineNativeLog.write("live-activity", "App 不在前台，已暂存发起，回到前台再补")
         result(true)
       }
 
-    case "update":
-      guard let args = call.arguments as? [String: Any] else {
-        result(FlutterError(code: "INVALID_ARGS", message: "缺少参数", details: nil))
-        return
-      }
-      applyUpdate(args)
-      result(true)
-
     case "end":
-      endActivity(policy: .immediate)
       pendingStart = nil
+      lastArgs = nil
+      lastState = nil
+      markWidgetStopped()
+      endActivity(policy: .immediate)
       result(nil)
 
     default:
@@ -330,71 +327,28 @@ final class CyShineLiveActivityBridge: NSObject {
 
   // MARK: - 活动生命周期
 
-  /// ★ 直接写 `MPNowPlayingInfoCenter`（锁屏 / 控制中心播放卡片）。
-  ///
-  ///   这张卡片与灵动岛是**两套独立机制**：它由系统根据 nowPlayingInfo 自己画，
-  ///   不需要 ActivityKit、不需要 Widget 扩展、不需要 App Group。
-  ///
-  ///   为什么还要在这里再写一遍 —— `audio_service` 已经会写：
-  ///   它的 Dart 侧要先把封面下载并落盘才发 `setMediaItem`，那一步是 await 的，
-  ///   网络慢或封面取不到时**整条 nowPlayingInfo 都会被拖住甚至不发**
-  ///   ⇒ 锁屏卡片一直不出现。这里用已经推给我们的标题/歌手/时长/进度
-  ///   先写一份，保证卡片立刻可用；封面能拿到再补。
-  ///
-  ///   走的是同一份数据源（`start`/`update` 的 args），两侧不会打架。
-  private func publishNowPlayingInfo(_ args: [String: Any], artworkPath: String?) {
-    guard let title = args["title"] as? String, !title.isEmpty else { return }
-    var info: [String: Any] = [:]
-    info[MPMediaItemPropertyTitle] = title
-    info[MPMediaItemPropertyArtist] = (args["artist"] as? String) ?? ""
-
-    let durationMs = (args["durationMs"] as? NSNumber)?.intValue ?? 0
-    if durationMs > 0 {
-      info[MPMediaItemPropertyPlaybackDuration] = Double(durationMs) / 1000
-    }
-    let positionMs = (args["positionMs"] as? NSNumber)?.intValue ?? 0
-    info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = Double(positionMs) / 1000
-
-    let playing = (args["playing"] as? Bool) ?? false
-    let rate: Double = playing ? 1.0 : 0.0
-    info[MPNowPlayingInfoPropertyPlaybackRate] = rate
-    info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = 1.0
-    info[MPNowPlayingInfoPropertyMediaType] = MPNowPlayingInfoMediaType.audio.rawValue
-
-    if let artworkPath, let image = Self.loadArtwork(relativePath: artworkPath) {
-      info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in
-        image
-      }
-    } else if let cover = args["cover"] as? String,
-              cover.hasPrefix("file://"),
-              let url = URL(string: cover),
-              let data = try? Data(contentsOf: url),
-              let image = UIImage(data: data) {
-      // Dart 侧缓存到沙盒临时目录的封面（同一 App 内可直接读）。
-      info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in
-        image
-      }
-    }
-
-    MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-  }
-
-  /// 从 App Group 容器读封面；容器不可用时返回 nil（卡片仍会显示，只是没缩略图）。
-  private static func loadArtwork(relativePath: String) -> UIImage? {
-    guard let base = FileManager.default.containerURL(
-      forSecurityApplicationGroupIdentifier: appGroupIdentifier
-    ) else { return nil }
-    let url = base.appendingPathComponent(relativePath)
-    guard let data = try? Data(contentsOf: url) else { return nil }
-    return UIImage(data: data)
-  }
-
   private func endOrphanedActivities() {
+    markWidgetStopped()
+    let previousActivities = Activity<CyShineActivityAttributes>.activities
     Task { @MainActor in
-      for stale in Activity<CyShineActivityAttributes>.activities {
-        await stale.end(nil, dismissalPolicy: .immediate)
+      for previous in previousActivities {
+        await previous.end(nil, dismissalPolicy: .immediate)
       }
     }
+  }
+
+  private func syncSharedPlayback(_ args: [String: Any]) throws {
+    guard let trackId = args["trackId"] as? String, !trackId.isEmpty else {
+      throw NSError(domain: "CyShineLiveActivity", code: 1,
+                     userInfo: [NSLocalizedDescriptionKey: "缺少曲目标识"])
+    }
+    let artworkChanged = lastArgs?["trackId"] as? String != trackId
+      || lastArgs?["cover"] as? String != args["cover"] as? String
+    let state = Self.payload(from: args, artworkPath: artworkChanged ? nil : lastState?.artworkPath)
+    lastArgs = args
+    lastState = state
+    writeSharedState(args: args, artworkPath: state.artworkPath)
+    if artworkChanged { resolveArtworkForCurrent(args) }
   }
 
   private func applyStart(_ args: [String: Any], result: @escaping FlutterResult) {
@@ -407,77 +361,61 @@ final class CyShineLiveActivityBridge: NSObject {
     }
   }
 
-  /// 真正发起活动。返回 nil 表示成功。
   private func performStart(_ args: [String: Any]) -> Error? {
     guard let trackId = args["trackId"] as? String, !trackId.isEmpty else {
       return NSError(domain: "CyShineLiveActivity", code: 1,
                      userInfo: [NSLocalizedDescriptionKey: "缺少 trackId"])
     }
-
-    // ★ 不管灵动岛成不成，锁屏/控制中心的播放卡片都先写上 ——
-    //   它只依赖 MPNowPlayingInfoCenter，与扩展是否被加载无关。
-    publishNowPlayingInfo(args, artworkPath: nil)
-
-    // 同一首歌重复 start 时退化成 update，避免灵动岛上出现两条。
     if let current = activity, current.attributes.trackId == trackId {
       applyUpdate(args)
       return nil
     }
     endActivity(policy: .immediate)
 
-    let payload = Self.payload(from: args)
-    let attributes = CyShineActivityAttributes(trackId: trackId)
+    let artworkPath = lastArgs?["trackId"] as? String == trackId ? lastState?.artworkPath : nil
+    let state = Self.payload(from: args, artworkPath: artworkPath)
     do {
       activity = try Activity.request(
-        attributes: attributes,
-        content: ActivityContent(state: payload, staleDate: nil),
+        attributes: CyShineActivityAttributes(trackId: trackId),
+        content: ActivityContent(state: state, staleDate: nil),
         pushType: nil
       )
     } catch {
-      NSLog("[live-activity] 启动失败: \(error.localizedDescription)")
-      CyShineNativeLog.write("live-activity", "发起失败: \(Self.describe(error)) | \(Self.diagnostics())")
       activity = nil
-      // 桌面小组件不依赖 ActivityKit，失败也要把数据写进去。
-      writeSharedState(args: args, artworkPath: nil)
-      resolveArtworkForCurrent(args)
+      CyShineNativeLog.write("live-activity", "发起失败: \(Self.describe(error)) | \(Self.diagnostics())")
       return error
     }
-    CyShineNativeLog.write("live-activity",
-                           "活动已发起 id=\(activity?.id ?? "?") title=\(payload.title)")
-    writeSharedState(args: args, artworkPath: nil)
-    resolveArtworkForCurrent(args)
+    CyShineNativeLog.write("live-activity", "活动已发起 id=\(activity?.id ?? "?") title=\(state.title)")
     return nil
   }
 
-  static func describe(_ error: Error) -> String {
-    let ns = error as NSError
-    return "\(ns.domain)#\(ns.code) \(ns.localizedDescription)"
-  }
-
   private func applyUpdate(_ args: [String: Any]) {
-    // ★ 先写锁屏卡片。下面几个分支会提前 return（活动被划掉 / 换歌），
-    //   但卡片必须每次都刷新，不能跟着 ActivityKit 的存活状态走。
-    publishNowPlayingInfo(args, artworkPath: nil)
-
     guard let activity else {
-      // 活动已经不在（用户划掉了 / 系统回收了）—— 当作一次新的发起。
       _ = performStart(args)
       return
     }
-    // 换歌了就走 start 的路径（会重建活动）
     if let trackId = args["trackId"] as? String,
        !trackId.isEmpty,
        trackId != activity.attributes.trackId {
       _ = performStart(args)
       return
     }
-    let payload = Self.payload(from: args)
-    let content = ActivityContent(state: payload, staleDate: nil)
-    Task { @MainActor in
-      await activity.update(content)
-    }
-    writeSharedState(args: args, artworkPath: payload.artworkPath)
+    let state = Self.payload(from: args, artworkPath: lastState?.artworkPath)
+    update(activity, state: state)
   }
+
+  private static func describe(_ error: Error) -> String {
+    let ns = error as NSError
+    return "\(ns.domain)#\(ns.code) \(ns.localizedDescription)"
+  }
+
+  private func update(_ activity: Activity<CyShineActivityAttributes>,
+                      state: CyShineActivityAttributes.ContentState) {
+    Task { @MainActor in
+      await activity.update(ActivityContent(state: state, staleDate: nil))
+    }
+  }
+
   private func endActivity(policy: ActivityUIDismissalPolicy) {
     guard let activity else { return }
     self.activity = nil
@@ -495,63 +433,42 @@ final class CyShineLiveActivityBridge: NSObject {
     let headers = (args["headers"] as? [String: Any])?
       .reduce(into: [String: String]()) { acc, e in acc[e.key] = String(describing: e.value) } ?? [:]
 
+    guard !cover.isEmpty, let base = Self.sharedContainerURL else { return }
     Task.detached(priority: .utility) { [weak self] in
-      guard let self else { return }
-      guard let relative = Self.storeArtwork(trackId: trackId, cover: cover, headers: headers) else {
-        return
-      }
+      guard let self, let jpeg = Self.artworkData(cover: cover, headers: headers) else { return }
       await MainActor.run {
-        guard let activity = self.activity,
-              activity.attributes.trackId == trackId else { return }
-        var state = Self.lastState ?? Self.emptyState()
-        state.artworkPath = relative
-        Self.lastState = state
-        Task { @MainActor in
-          await activity.update(ActivityContent(state: state, staleDate: nil))
+        guard let args = self.lastArgs, var state = self.lastState,
+              args["trackId"] as? String == trackId, args["cover"] as? String == cover else { return }
+        let directory = base.appendingPathComponent(Self.artworkDirectory, isDirectory: true)
+        do {
+          try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+          try jpeg.write(to: directory.appendingPathComponent("current.jpg"), options: .atomic)
+        } catch {
+          return
         }
-        self.writeSharedState(args: args, artworkPath: relative)
+        state.artworkPath = "\(Self.artworkDirectory)/current.jpg"
+        self.lastState = state
+        self.writeSharedState(args: args, artworkPath: state.artworkPath)
+        if let activity = self.activity, activity.attributes.trackId == trackId {
+          self.update(activity, state: state)
+        }
       }
     }
   }
 
-  /// 把封面落到 App Group 容器，返回相对路径。
-  /// 容器不可用（没开 App Groups 能力）时返回 nil —— 调用方会让 UI 回退到占位图。
-  private static func storeArtwork(
-    trackId: String,
-    cover: String,
-    headers: [String: String]
-  ) -> String? {
-    guard let base = FileManager.default.containerURL(
-      forSecurityApplicationGroupIdentifier: appGroupIdentifier) else { return nil }
-
+  private static func artworkData(cover: String, headers: [String: String]) -> Data? {
     let data: Data?
-    if cover.hasPrefix("file://"), let url = URL(string: cover) {
+    if let url = URL(string: cover), url.isFileURL {
       data = try? Data(contentsOf: url)
-    } else if let url = URL(string: cover), url.scheme?.hasPrefix("http") == true {
+    } else if let url = URL(string: cover), let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" {
       data = downloadSynchronously(url: url, headers: headers)
-    } else if !cover.isEmpty {
-      data = try? Data(contentsOf: URL(fileURLWithPath: cover))
     } else {
-      data = nil
+      data = try? Data(contentsOf: URL(fileURLWithPath: cover))
     }
-    guard let data, let image = UIImage(data: data) else { return nil }
-    guard let scaled = downscale(image, maxPixels: maxArtworkPixels),
-          let jpeg = scaled.jpegData(compressionQuality: 0.82) else { return nil }
-
-    let directory = base.appendingPathComponent(artworkDirectory, isDirectory: true)
-    try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    let safeName = trackId.replacingOccurrences(
-      of: "[^A-Za-z0-9_-]",
-      with: "_",
-      options: .regularExpression
-    )
-    // 固定用 current.jpg：避免每换一首歌就在容器里堆一个文件。
-    let file = directory.appendingPathComponent("current.jpg")
-    // 记录来源曲目，供小组件判断封面是否对应当前歌曲
-    UserDefaults(suiteName: appGroupIdentifier)?
-      .set(safeName, forKey: "widget.artworkTrackId")
-    guard (try? jpeg.write(to: file, options: .atomic)) != nil else { return nil }
-    return "\(artworkDirectory)/current.jpg"
+    guard let data, let image = UIImage(data: data),
+          let scaled = downscale(image, maxPixels: maxArtworkPixels) else { return nil }
+    return scaled.jpegData(compressionQuality: 0.82)
   }
 
   private static func downloadSynchronously(
@@ -587,46 +504,51 @@ final class CyShineLiveActivityBridge: NSObject {
   // MARK: - 给桌面小组件用的共享数据
 
   private func writeSharedState(args: [String: Any], artworkPath: String?) {
-    guard let defaults = UserDefaults(suiteName: Self.appGroupIdentifier) else { return }
-    defaults.set((args["trackId"] as? String) ?? "", forKey: "widget.trackId")
-    defaults.set((args["title"] as? String) ?? "", forKey: "widget.title")
-    defaults.set((args["artist"] as? String) ?? "", forKey: "widget.artist")
-    defaults.set((args["playing"] as? Bool) ?? false, forKey: "widget.playing")
-    defaults.set(artworkPath ?? "", forKey: "widget.artworkFile")
+    guard Self.sharedContainerURL != nil,
+          let defaults = UserDefaults(suiteName: Self.appGroupIdentifier) else { return }
+    let metadata = [
+      "widget.trackId": args["trackId"] as? String ?? "",
+      "widget.title": args["title"] as? String ?? "",
+      "widget.artist": args["artist"] as? String ?? "",
+      "widget.artworkFile": artworkPath ?? "",
+    ]
+    let playing = args["playing"] as? Bool ?? false
+    guard defaults.bool(forKey: "widget.playing") != playing ||
+      metadata.contains(where: { defaults.string(forKey: $0.key) != $0.value }) else { return }
+    for (key, value) in metadata { defaults.set(value, forKey: key) }
+    defaults.set(playing, forKey: "widget.playing")
+    reloadHomeWidget(defaults)
+  }
+
+  private func markWidgetStopped() {
+    guard Self.sharedContainerURL != nil,
+          let defaults = UserDefaults(suiteName: Self.appGroupIdentifier),
+          defaults.bool(forKey: "widget.playing") else { return }
+    defaults.set(false, forKey: "widget.playing")
+    reloadHomeWidget(defaults)
+  }
+
+  private func reloadHomeWidget(_ defaults: UserDefaults) {
     defaults.set(Date().timeIntervalSince1970, forKey: "widget.updatedAt")
+    WidgetCenter.shared.reloadTimelines(ofKind: "CyShineHomeWidget")
   }
 
   // MARK: - ContentState 构造
 
-  /// 最近一次的 state。封面是异步补上的，需要一个地方暂存它。
-  private static var lastState: CyShineActivityAttributes.ContentState?
-
-  private static func emptyState() -> CyShineActivityAttributes.ContentState {
-    .init(title: "", artist: "", positionMs: 0, durationMs: 0,
-          playing: false, updatedAt: Date().timeIntervalSince1970, artworkPath: nil)
-  }
-
   private static func payload(
-    from args: [String: Any]
+    from args: [String: Any], artworkPath: String?
   ) -> CyShineActivityAttributes.ContentState {
     let durationMs = (args["durationMs"] as? NSNumber)?.intValue ?? 0
     let title = (args["title"] as? String) ?? ""
     let artist = (args["artist"] as? String) ?? ""
-    var state = CyShineActivityAttributes.ContentState(
+    return CyShineActivityAttributes.ContentState(
       title: title,
       artist: artist,
       positionMs: (args["positionMs"] as? NSNumber)?.intValue ?? 0,
       durationMs: durationMs,
       playing: (args["playing"] as? Bool) ?? false,
       updatedAt: Date().timeIntervalSince1970,
-      // 同一首歌的后续更新沿用已经写好的封面路径
-      artworkPath: lastState?.artworkPath
+      artworkPath: artworkPath
     )
-    // 换歌时把上一首的封面路径丢掉，避免新歌短暂显示旧封面
-    if let previous = lastState, previous.title != title, !previous.title.isEmpty {
-      state.artworkPath = nil
-    }
-    lastState = state
-    return state
   }
 }

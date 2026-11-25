@@ -22,6 +22,7 @@ bool isImmersivePlaylistDetailLocation(String location) {
       location.split('/').length > 4;
   return isPlaylistDetailLocation(location) ||
       location.startsWith('/discover/playlists/') ||
+      location.startsWith('/discover/artists/') ||
       leaderboardDetail;
 }
 

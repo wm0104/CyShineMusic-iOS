@@ -1062,7 +1062,9 @@ class PlayerController extends StateNotifier<PlayerState>
     for (final entry in entries) {
       if (!_isQueueCandidate(entry)) continue;
       final path = entry.savedPath?.trim();
-      final key = path != null && path.isNotEmpty
+      final key = entry.preservePlaylistPosition
+          ? entry.id
+          : path != null && path.isNotEmpty
           ? 'file:$path'
           : entry.musicId.isNotEmpty
           ? 'music:${entry.sourceCode}:${entry.musicId}'
@@ -1087,6 +1089,7 @@ class PlayerController extends StateNotifier<PlayerState>
 
   bool _sameEntry(DownloadHistoryEntry a, DownloadHistoryEntry b) {
     if (a.id == b.id) return true;
+    if (a.preservePlaylistPosition || b.preservePlaylistPosition) return false;
     final aPath = a.savedPath;
     final bPath = b.savedPath;
     if (aPath != null && aPath.isNotEmpty && aPath == bPath) return true;
@@ -1214,20 +1217,16 @@ class PlayerController extends StateNotifier<PlayerState>
     PlayerTrack track, {
     Duration? duration,
   }) async {
-    // ★ 锁屏 / 控制中心的封面必须落成**本地文件**。
-    // audio_service 的 iOS 实现（AudioServicePlugin.m `setMediaItem`）只会从
-    // `extras['artCacheFile']` 读本地路径来构造 MPMediaItemArtwork；纯网络
-    // artUri 若没有缓存文件，`artwork` 会是 nil，锁屏卡片就没有缩略图。
-    // 它自己会试着下载并缓存，但那一步失败时静默无日志，很难排查 ——
-    // 这里自己先落盘，把不确定性消掉。
+    // iOS 的 audio_service 会先发曲目信息，网络封面下载好后再补图。
+    final networkArt = _networkArtworkUri(track.coverUrl);
     final localArt = await _audioHandler.cacheArtwork(
       track.coverBytes,
-      fallbackUrl: _networkArtworkUri(track.coverUrl)?.toString(),
+      fallbackUrl: Platform.isIOS ? null : networkArt?.toString(),
     );
     return _buildMediaItem(
       track,
       duration: duration,
-      artUri: localArt ?? _networkArtworkUri(track.coverUrl),
+      artUri: localArt ?? networkArt,
     );
   }
 

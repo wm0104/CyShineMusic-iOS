@@ -72,11 +72,6 @@ struct CyShineActivityAttributes: ActivityAttributes {
         }
     }
 
-    /// 整个活动生命周期内不变的部分。
-    /// 放在 attributes 里而不是 ContentState，是为了让每次更新的载荷尽量小。
-    ///
-    /// 注意：**不要把「是否显示进度条」这类信息放这里**。
-    /// attributes 在 `Activity.request` 时就固定了，而音频时长往往是播放开始后
-    /// 才解析出来的 —— 那样会永远拿不到进度条。UI 直接看 `state.durationMs > 0`。
+    /// 当前活动的曲目标识，换歌时重新发起活动。
     var trackId: String
 }

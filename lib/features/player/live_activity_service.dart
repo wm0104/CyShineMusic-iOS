@@ -1,7 +1,7 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:audio_service/audio_service.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -12,7 +12,7 @@ import 'player_controller.dart';
 
 /// 灵动岛 / 锁屏实时活动（Live Activity）的驱动。
 ///
-/// 只在 iOS 上生效，且系统「设置 → 栖弦 → 实时活动」打开时才真正工作。
+/// iOS 通过同一通道更新实时活动和具有 App Group 权限的桌面小组件。
 /// 原生实现见 ios/Runner/CyShineLiveActivityBridge.swift，
 /// 渲染见 ios/CyShineMusicWidget/CyShineLiveActivityWidget.swift。
 ///
@@ -54,12 +54,12 @@ class LiveActivityService {
   Future<void> Function()? onOpenPlayer;
 
   Future<void> initialize() async {
-    if (!Platform.isIOS) return;
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return;
     _channel.setMethodCallHandler(_handleNativeCall);
     await _ensureAvailable();
   }
 
-  /// 检查系统的实时活动开关。
+  /// 检查 iOS 是否可以接收实时活动或桌面小组件的播放状态。
   ///
   /// 刻意做成可以反复调用：用户可能先播放、才想起来去
   /// 「设置 → 栖弦 → 实时活动」打开开关 —— 只在启动时检查一次的话，
@@ -69,7 +69,12 @@ class LiveActivityService {
   /// [force] 用于「通知授权刚被回答」这种外部状态变化的场景：
   /// 之前拿到过 false 而放弃了，必须强制重新判定一次。
   Future<void> _ensureAvailable({bool force = false}) async {
-    if (!Platform.isIOS || (_available && !force) || _checking) return;
+    if (kIsWeb ||
+        defaultTargetPlatform != TargetPlatform.iOS ||
+        (_available && !force) ||
+        _checking) {
+      return;
+    }
     _checking = true;
     try {
       final supported =
@@ -77,14 +82,14 @@ class LiveActivityService {
       if (!supported) {
         await AppLogger.write(
           'live-activity',
-          '系统未开启实时活动（设置 → 栖弦 → 实时活动），暂不推送；开关打开后无需重启即可生效',
+          '实时活动已关闭，且桌面小组件共享容器不可用；将在播放状态变化时重试',
         );
         _available = false;
         return;
       }
       _available = true;
       _attachListeners();
-      await AppLogger.write('live-activity', '实时活动已就绪');
+      await AppLogger.write('live-activity', '系统播放状态同步已就绪');
     } on MissingPluginException {
       _available = false;
     } catch (error) {

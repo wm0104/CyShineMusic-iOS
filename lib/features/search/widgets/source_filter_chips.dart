@@ -3,6 +3,7 @@ import 'package:flutter/physics.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/models/enums.dart';
+import '../../../core/api/music_api.dart';
 import '../../../core/storage/settings_store.dart';
 import '../../../theme/app_motion.dart';
 import '../search_controller.dart';
@@ -12,66 +13,115 @@ class SourceFilterChips extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final scheme = Theme.of(context).colorScheme;
-    final selected = ref.watch(searchControllerProvider).source;
+    final state = ref.watch(searchControllerProvider);
     final settings = ref.watch(settingsProvider);
+    final artists = state.category == SearchCategory.artists;
     final sources = [
-      MusicSource.all,
+      if (!artists) MusicSource.all,
       for (final source in settings.discoverySourceOrder)
-        if (settings.enabledSearchSources.contains(source)) source,
+        if (settings.enabledSearchSources.contains(source) &&
+            (!artists || MusicApi.artistSources.contains(source)))
+          source,
     ];
-    final selectedIndex = sources.indexOf(selected);
-    final reduceMotion = MediaQuery.disableAnimationsOf(context);
-    final duration = reduceMotion ? Duration.zero : AppMotion.medium;
-
+    if (sources.isEmpty) return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12),
-      child: Container(
-        key: const ValueKey('search-source-filter'),
-        height: 36,
-        padding: const EdgeInsets.all(2),
-        decoration: BoxDecoration(
-          color: scheme.surfaceContainer,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: scheme.outlineVariant.withValues(alpha: 0.2),
-          ),
-        ),
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final itemWidth = constraints.maxWidth / sources.length;
-            return Stack(
-              children: [
-                AnimatedPositioned(
-                  left: (selectedIndex < 0 ? 0 : selectedIndex) * itemWidth,
-                  top: 0,
-                  bottom: 0,
-                  width: itemWidth,
-                  duration: duration,
-                  curve: AppMotion.emphasized,
-                  child: const _SourceSlidingIndicator(
-                    key: ValueKey('search-source-indicator'),
-                  ),
+      child: _SearchSegments(
+        prefix: 'search-source',
+        options: [for (final s in sources) (id: s.code, label: s.label)],
+        selected: sources.indexOf(state.source),
+        semanticsSuffix: '音乐来源',
+        onSelect: (i) =>
+            ref.read(searchControllerProvider.notifier).setSource(sources[i]),
+      ),
+    );
+  }
+}
+
+class SearchCategoryChips extends ConsumerWidget {
+  const SearchCategoryChips({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final category = ref.watch(
+      searchControllerProvider.select((s) => s.category),
+    );
+    return _SearchSegments(
+      prefix: 'search-category',
+      options: [
+        for (final c in SearchCategory.values) (id: c.name, label: c.label),
+      ],
+      selected: category.index,
+      semanticsSuffix: '搜索',
+      onSelect: (i) => ref
+          .read(searchControllerProvider.notifier)
+          .setCategory(SearchCategory.values[i]),
+    );
+  }
+}
+
+class _SearchSegments extends StatelessWidget {
+  const _SearchSegments({
+    required this.prefix,
+    required this.options,
+    required this.selected,
+    required this.semanticsSuffix,
+    required this.onSelect,
+  });
+  final String prefix;
+  final List<({String id, String label})> options;
+  final int selected;
+  final String semanticsSuffix;
+  final ValueChanged<int> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final duration = MediaQuery.disableAnimationsOf(context)
+        ? Duration.zero
+        : AppMotion.medium;
+    return Container(
+      key: ValueKey('$prefix-filter'),
+      height: 36,
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainer,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.2)),
+      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final itemWidth = constraints.maxWidth / options.length;
+          return Stack(
+            children: [
+              AnimatedPositioned(
+                left: (selected < 0 ? 0 : selected) * itemWidth,
+                top: 0,
+                bottom: 0,
+                width: itemWidth,
+                duration: duration,
+                curve: AppMotion.emphasized,
+                child: _SourceSlidingIndicator(
+                  key: ValueKey('$prefix-indicator'),
                 ),
-                Row(
-                  children: [
-                    for (final source in sources)
-                      Expanded(
-                        child: _SourceChip(
-                          key: ValueKey('search-source-${source.code}'),
-                          source: source,
-                          selected: selected == source,
-                          onTap: () => ref
-                              .read(searchControllerProvider.notifier)
-                              .setSource(source),
-                        ),
+              ),
+              Row(
+                children: [
+                  for (var i = 0; i < options.length; i++)
+                    Expanded(
+                      child: _SourceChip(
+                        key: ValueKey('$prefix-${options[i].id}'),
+                        label: options[i].label,
+                        semanticsLabel: '${options[i].label}$semanticsSuffix',
+                        selected: selected == i,
+                        onTap: () => onSelect(i),
                       ),
-                  ],
-                ),
-              ],
-            );
-          },
-        ),
+                    ),
+                ],
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -97,12 +147,14 @@ class _SourceSlidingIndicator extends StatelessWidget {
 class _SourceChip extends StatefulWidget {
   const _SourceChip({
     super.key,
-    required this.source,
+    required this.label,
+    required this.semanticsLabel,
     required this.selected,
     required this.onTap,
   });
 
-  final MusicSource source;
+  final String label;
+  final String semanticsLabel;
   final bool selected;
   final VoidCallback onTap;
 
@@ -149,7 +201,7 @@ class _SourceChipState extends State<_SourceChip>
       child: Semantics(
         button: true,
         selected: widget.selected,
-        label: '${widget.source.label}音乐来源',
+        label: widget.semanticsLabel,
         excludeSemantics: true,
         child: Material(
           color: Colors.transparent,
@@ -188,7 +240,7 @@ class _SourceChipState extends State<_SourceChip>
                 ),
                 child: Center(
                   child: Text(
-                    widget.source.label,
+                    widget.label,
                     maxLines: 1,
                     overflow: TextOverflow.fade,
                     softWrap: false,

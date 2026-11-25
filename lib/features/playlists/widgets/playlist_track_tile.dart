@@ -152,7 +152,7 @@ class PlaylistTrackTile extends ConsumerWidget {
                             item.track.singer.trim().isEmpty
                                 ? '未知歌手'
                                 : item.track.singer,
-                            isLocal ? '本地' : item.track.source.label,
+                            isLocal ? '本地' : item.track.sourceLabel,
                           ].join(' · '),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,

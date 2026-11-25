@@ -1,7 +1,6 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
-import '../../../core/models/enums.dart';
 import '../../../core/models/music_info.dart';
 import '../../../core/services/app_logger.dart';
 import '../../../core/ui/cover_image_source.dart';
@@ -25,6 +24,8 @@ class SearchResultTile extends StatelessWidget {
     this.coverUrl,
     this.coverLoading = false,
     this.onCoverError,
+    this.displayName,
+    this.displaySinger,
   });
 
   final MusicInfo music;
@@ -35,6 +36,8 @@ class SearchResultTile extends StatelessWidget {
   final String? coverUrl;
   final bool coverLoading;
   final VoidCallback? onCoverError;
+  final String? displayName;
+  final String? displaySinger;
 
   @override
   Widget build(BuildContext context) {
@@ -43,11 +46,6 @@ class SearchResultTile extends StatelessWidget {
     final done = task?.stage == DownloadStage.done;
     final busy = task?.isBusy ?? false;
     final failed = task?.stage == DownloadStage.failed;
-    final artist = music.singer.trim().isEmpty ? '未知歌手' : music.singer.trim();
-    final metadata = [
-      artist,
-      if (music.albumName.trim().isNotEmpty) music.albumName.trim(),
-    ].join(' · ');
     final buttonTooltip = done
         ? '已下载完成'
         : failed
@@ -59,6 +57,80 @@ class SearchResultTile extends StatelessWidget {
         ? scheme.errorContainer.withValues(alpha: 0.18)
         : Colors.transparent;
 
+    return TrackResultRow(
+      name: displayName ?? music.name,
+      singer: displaySinger ?? music.singer,
+      album: music.albumName,
+      sourceLabel: music.source.label,
+      interval: music.interval,
+      cover: _Cover(
+        picUrl: coverUrl ?? music.meta.picUrl,
+        loading: coverLoading,
+        onError: onCoverError,
+      ),
+      onPlay: onPlay,
+      backgroundColor: backgroundColor,
+      actions: [
+        if (onAddToPlaylist != null) ...[
+          ExpressiveDownloadButton(
+            key: ValueKey('search-result-add-to-playlist-${music.id}'),
+            isLoading: false,
+            onPressed: onAddToPlaylist,
+            tooltip: '添加到歌单',
+            size: 36,
+            tapTargetSize: 40,
+            tonal: true,
+            idleIcon: Icons.playlist_add_rounded,
+          ),
+          const SizedBox(width: 2),
+        ],
+        ExpressiveDownloadButton(
+          key: ValueKey('search-result-download-${music.id}'),
+          isLoading: busy,
+          isDone: done,
+          progress: task?.fraction,
+          onPressed: busy || done ? null : onDownload,
+          tooltip: buttonTooltip,
+          size: 36,
+          tapTargetSize: 40,
+          tonal: true,
+        ),
+      ],
+    );
+  }
+}
+
+class TrackResultRow extends StatelessWidget {
+  const TrackResultRow({
+    super.key,
+    required this.name,
+    required this.singer,
+    required this.sourceLabel,
+    this.album = '',
+    this.interval,
+    this.cover = const _Cover(picUrl: null, loading: false),
+    this.onPlay,
+    this.backgroundColor = Colors.transparent,
+    this.actions = const [],
+  });
+
+  final String name;
+  final String singer;
+  final String sourceLabel;
+  final String album;
+  final String? interval;
+  final Widget cover;
+  final VoidCallback? onPlay;
+  final Color backgroundColor;
+  final List<Widget> actions;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final metadata = [
+      singer.trim().isEmpty ? '未知歌手' : singer.trim(),
+      if (album.trim().isNotEmpty) album.trim(),
+    ].join(' · ');
     return AnimatedContainer(
       duration: AppMotion.short,
       curve: AppMotion.emphasized,
@@ -67,8 +139,8 @@ class SearchResultTile extends StatelessWidget {
       child: Material(
         color: Colors.transparent,
         child: Semantics(
-          button: true,
-          hint: '轻触播放',
+          button: onPlay != null,
+          hint: onPlay == null ? null : '轻触播放',
           child: InkWell(
             onTap: onPlay,
             child: Padding(
@@ -76,11 +148,7 @@ class SearchResultTile extends StatelessWidget {
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  _Cover(
-                    picUrl: coverUrl ?? music.meta.picUrl,
-                    loading: coverLoading,
-                    onError: onCoverError,
-                  ),
+                  cover,
                   const SizedBox(width: 8),
                   Expanded(
                     child: Column(
@@ -88,7 +156,7 @@ class SearchResultTile extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          music.name,
+                          name,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
@@ -102,7 +170,7 @@ class SearchResultTile extends StatelessWidget {
                         const SizedBox(height: 2),
                         Row(
                           children: [
-                            _SourceBadge(source: music.source),
+                            _SourceBadge(label: sourceLabel),
                             const SizedBox(width: 6),
                             Expanded(
                               child: Text(
@@ -117,7 +185,7 @@ class SearchResultTile extends StatelessWidget {
                                 ),
                               ),
                             ),
-                            if (music.interval?.trim().isNotEmpty ?? false) ...[
+                            if (interval?.trim().isNotEmpty ?? false) ...[
                               const SizedBox(width: 5),
                               Container(
                                 width: 2,
@@ -131,7 +199,7 @@ class SearchResultTile extends StatelessWidget {
                               ),
                               const SizedBox(width: 5),
                               Text(
-                                music.interval!,
+                                interval!,
                                 style: TextStyle(
                                   color: scheme.onSurfaceVariant.withValues(
                                     alpha: 0.78,
@@ -150,31 +218,7 @@ class SearchResultTile extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(width: 4),
-                  if (onAddToPlaylist != null)
-                    ExpressiveDownloadButton(
-                      key: ValueKey(
-                        'search-result-add-to-playlist-${music.id}',
-                      ),
-                      isLoading: false,
-                      onPressed: onAddToPlaylist,
-                      tooltip: '添加到歌单',
-                      size: 36,
-                      tapTargetSize: 40,
-                      tonal: true,
-                      idleIcon: Icons.playlist_add_rounded,
-                    ),
-                  if (onAddToPlaylist != null) const SizedBox(width: 2),
-                  ExpressiveDownloadButton(
-                    key: ValueKey('search-result-download-${music.id}'),
-                    isLoading: busy,
-                    isDone: done,
-                    progress: task?.fraction,
-                    onPressed: busy || done ? null : onDownload,
-                    tooltip: buttonTooltip,
-                    size: 36,
-                    tapTargetSize: 40,
-                    tonal: true,
-                  ),
+                  ...actions,
                 ],
               ),
             ),
@@ -261,8 +305,8 @@ class _Cover extends StatelessWidget {
 }
 
 class _SourceBadge extends StatelessWidget {
-  const _SourceBadge({required this.source});
-  final MusicSource source;
+  const _SourceBadge({required this.label});
+  final String label;
 
   @override
   Widget build(BuildContext context) {
@@ -276,7 +320,7 @@ class _SourceBadge extends StatelessWidget {
       ),
       alignment: Alignment.center,
       child: Text(
-        source.label,
+        label,
         textAlign: TextAlign.center,
         style: TextStyle(
           color: scheme.onSecondaryContainer,

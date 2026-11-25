@@ -141,8 +141,12 @@ class _PlaylistDetailPageState extends ConsumerState<PlaylistDetailPage> {
           return ResolvedPlaylistTrack(
             track: track,
             localEntry: localEntry,
-            queueEntry:
-                localEntry ?? track.toQueueEntry(playlistId: playlist.id),
+            queueEntry: track.spotify != null
+                ? track.toQueueEntry(
+                    playlistId: playlist.id,
+                    downloadedPath: localEntry?.savedPath,
+                  )
+                : localEntry ?? track.toQueueEntry(playlistId: playlist.id),
           );
         })
         .toList(growable: false);
@@ -676,9 +680,20 @@ class _PlaylistDetailPageState extends ConsumerState<PlaylistDetailPage> {
     final sourceCode = playlist.originSourceCode?.trim() ?? '';
     final source = MusicSource.fromCode(sourceCode);
     return [
-      playlist.isOnlineImport ? source.label : '本地歌单',
+      if (sourceCode == 'spotify')
+        'Spotify'
+      else if (playlist.isOnlineImport)
+        source.label
+      else
+        '本地歌单',
       if (playlist.creator?.trim().isNotEmpty == true) playlist.creator!.trim(),
       '${playlist.tracks.length} 首',
+      if (sourceCode == 'spotify' && playlist.originTrackCount == null)
+        '原歌单总数未确认'
+      else if (sourceCode == 'spotify' &&
+          playlist.originPreviewCount != null &&
+          playlist.originTrackCount != playlist.originPreviewCount)
+        '上次读取 ${playlist.originPreviewCount} / ${playlist.originTrackCount} 首',
       if (localCount > 0) '$localCount 首已下载',
     ].join(' · ');
   }
@@ -1103,7 +1118,11 @@ class _PlaylistDetailPageState extends ConsumerState<PlaylistDetailPage> {
   ) async {
     final entry = item.queueEntry;
     if (entry == null) {
-      showAppToast(context, '这首歌曲暂时无法播放', type: AppToastType.warning);
+      showAppToast(
+        context,
+        item.track.isUnmatchedSpotify ? '这首 Spotify 歌曲尚未匹配到音源' : '这首歌曲暂时无法播放',
+        type: AppToastType.warning,
+      );
       return;
     }
     final available = await ensureQueueEntryMusicSourceAvailable(

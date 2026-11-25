@@ -22,20 +22,19 @@ on:
 env:
   # 项目要求 Flutter >= 3.41.0（pubspec: sdk ^3.11.4）。
   FLUTTER_VERSION: '3.47.7'
-  FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
   PUB_HOSTED_URL: https://pub.flutter-io.cn
 
 jobs:
   build-ios:
     name: Build iOS
-    runs-on: macos-latest
+    runs-on: macos-15-intel
     timeout-minutes: 60
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.ref || github.ref }}
+          ref: ${{ github.event.inputs.ref || github.sha }}
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -263,6 +262,18 @@ jobs:
         with:
           name: CyShineMusic-unsigned-ipa
           path: build/CyShineMusic-unsigned.ipa
+          retention-days: 14
+
+      - name: Record release source
+        if: github.ref == 'refs/heads/ios'
+        run: git rev-parse HEAD > build/source-commit.txt
+
+      - name: Upload release source
+        if: github.ref == 'refs/heads/ios'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-release-source
+          path: build/source-commit.txt
           retention-days: 14
 
       - name: Upload build logs on failure

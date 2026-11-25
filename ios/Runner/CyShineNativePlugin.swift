@@ -918,17 +918,7 @@ final class CyShineAppTaskChannel {
     }
   }
 
-  /// ★ 锁屏 / 控制中心播放卡片的诊断。
-  ///
-  ///   这条链路与灵动岛**完全无关** —— 它由 `audio_service` → `MPNowPlayingInfoCenter`
-  ///   驱动，系统自己画卡片，不需要 ActivityKit，也不需要 Widget 扩展。
-  ///   （趣听音乐的锁屏卡片就是这一套，它根本没做灵动岛。）
-  ///
-  ///   卡片出不来的常见原因按「最可能 → 最不可能」排：
-  ///     1. 后台音频没被允许（`UIBackgroundModes` 缺 `audio`）
-  ///     2. 音频会话没激活 / 被别的 App 抢走
-  ///     3. `nowPlayingInfo` 为空 —— 卡片需要 title+artist+rate 至少有一项
-  ///     4. 封面是网络 URL 而非本地文件（audio_service 只认本地，见下）
+  /// 记录系统播放器收到的媒体信息和当前音频会话配置，供锁屏或控制中心问题排查。
   private func mediaSessionDiagnostics() -> [String: Any?] {
     let center = MPNowPlayingInfoCenter.default()
     let info = center.nowPlayingInfo
@@ -937,7 +927,8 @@ final class CyShineAppTaskChannel {
     var parts: [String] = []
     parts.append("后台音频=\(Self.backgroundModes().contains("audio") ? "已声明" : "未声明⚠")")
     parts.append("会话分类=\(session.category.rawValue)")
-    parts.append("会话活动=\(session.isOtherAudioPlaying ? "他人有声" : "独占")")
+    parts.append("允许混音=\(session.categoryOptions.contains(.mixWithOthers) ? "是" : "否")")
+    parts.append("其他应用有声=\(session.isOtherAudioPlaying ? "是" : "否")")
     // nowPlayingInfo 为 nil 时系统不会画卡片，这里是最直接的判据。
     parts.append("nowPlaying=\(info == nil ? "空⚠" : "有\(info!.count)项")")
 

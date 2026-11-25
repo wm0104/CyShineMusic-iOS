@@ -11,7 +11,6 @@
 //
 // 因为契约一致，lib/ 与 packages/bass_player/lib/bass_player.dart 都不需要改动。
 
-import AVFAudio
 import Flutter
 import Foundation
 import UIKit
@@ -251,8 +250,6 @@ public final class BassPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandl
   private func initializeEngine() throws -> [String: Any?] {
     if initialized { return engineInfo() }
 
-    try configureAudioSession()
-
     let rawVersion = BASS_GetVersion()
     bassVersion = BassPlayerPlugin.versionString(rawVersion)
     if (rawVersion >> 16) != UInt32(BASSVERSION) {
@@ -262,6 +259,11 @@ public final class BassPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandl
     // iOS 上没有 BASS_FX：均衡器由内置 biquad DSP 实现，这里如实上报。
     fxVersion = "builtin-biquad"
 
+    // audio_session configures the playback category and the user's mixing preference.
+    // BASS otherwise enables mixing again when it initializes the output device.
+    guard BASS_SetConfig(UInt32(BASS_CONFIG_IOS_SESSION), UInt32(BASS_IOS_SESSION_DISABLE)) != 0 else {
+      throw BassError.fromLastError(operation: "configure iOS audio session management")
+    }
     _ = BASS_SetConfig(UInt32(BASS_CONFIG_BUFFER), 500)
     _ = BASS_SetConfig(UInt32(BASS_CONFIG_UPDATEPERIOD), 50)
     _ = BASS_SetConfig(UInt32(BASS_CONFIG_NET_TIMEOUT), 15_000)
@@ -292,19 +294,6 @@ public final class BassPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandl
 
   private func engineInfo() -> [String: Any?] {
     ["version": bassVersion, "fxVersion": fxVersion, "plugins": pluginVersions]
-  }
-
-  private func configureAudioSession() throws {
-    // 后台播放 + 锁屏控制依赖 .playback；audio_service 会在 Dart 侧接管
-    // NowPlayingInfo，这里只负责把 session 建起来。
-    do {
-      let session = AVAudioSession.sharedInstance()
-      try session.setCategory(.playback, mode: .default, options: [])
-      try session.setActive(true)
-    } catch {
-      // 不起音频会话不该阻断播放（例如单元测试环境），只记录。
-      try? AppLog.write("bass", "AVAudioSession 配置失败: \(error)")
-    }
   }
 
   // MARK: - 播放控制
@@ -400,7 +389,7 @@ public final class BassPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandl
       }
       completed = false
     }
-    if BASS_ChannelPlay(stream, 1) == 0 {
+    if BASS_ChannelPlay(stream, 0) == 0 {
       throw BassError.fromLastError(operation: "play")
     }
     refreshPlaybackState()
@@ -1010,17 +999,5 @@ struct BassError: Error {
     case Int32(BASS_ERROR_CANCEL): return "cancelled"
     default: return "unknown error (\(code))"
     }
-  }
-}
-
-// MARK: - 日志桥
-
-/// 与 lib/core/services/app_logger.dart 的 Android 侧行为对齐：iOS 上不写系统日志通道，
-/// 只在本地 console 留痕，避免依赖尚未移植的 cy_shine_music/app_task 通道。
-enum AppLog {
-  static func write(_ tag: String, _ message: String) {
-    #if DEBUG
-      NSLog("[\(tag)] \(message)")
-    #endif
   }
 }

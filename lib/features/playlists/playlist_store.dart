@@ -10,6 +10,7 @@ import '../../core/storage/settings_store.dart';
 import '../downloads/download_history_store.dart';
 import 'lx_playlist_import.dart';
 import 'playlist_models.dart';
+import 'spotify_playlist_import.dart';
 
 const String localPlaylistsStorageKey = 'local_playlists_v1';
 
@@ -118,12 +119,45 @@ class LocalPlaylistNotifier extends Notifier<List<LocalPlaylist>> {
   Future<LocalPlaylist> importOnline(
     PlaylistInfo online, {
     bool synchronizeTracks = false,
+  }) {
+    return _importOnlineTracks(
+      originId: online.id.trim(),
+      sourceCode: online.source.code,
+      name: online.name,
+      importedTracks: online.tracks.map(PlaylistTrack.fromMusicInfo).toList(),
+      coverUrl: online.coverUrl,
+      creator: online.creator,
+      description: online.description,
+      synchronizeTracks: synchronizeTracks,
+    );
+  }
+
+  Future<LocalPlaylist> importSpotify(SpotifyPlaylistPreview preview) {
+    return _importOnlineTracks(
+      originId: preview.id,
+      sourceCode: 'spotify',
+      name: preview.name,
+      importedTracks: preview.tracks,
+      creator: preview.creator,
+      coverUrl: preview.coverUrl,
+      originTrackCount: preview.total,
+      synchronizeTracks: true,
+      preserveUnseenTracks: !preview.complete,
+    );
+  }
+
+  Future<LocalPlaylist> _importOnlineTracks({
+    required String originId,
+    required String sourceCode,
+    required String name,
+    required List<PlaylistTrack> importedTracks,
+    int? originTrackCount,
+    bool preserveUnseenTracks = false,
+    required bool synchronizeTracks,
+    String? coverUrl,
+    String? creator,
+    String? description,
   }) async {
-    final sourceCode = online.source.code;
-    final originId = online.id.trim();
-    final importedTracks = online.tracks
-        .map(PlaylistTrack.fromMusicInfo)
-        .toList(growable: false);
     final onlineTrackIds = _uniqueTrackIds(importedTracks);
     final existingIndex = state.indexWhere(
       (playlist) =>
@@ -134,15 +168,28 @@ class LocalPlaylistNotifier extends Notifier<List<LocalPlaylist>> {
 
     if (existingIndex >= 0) {
       final current = state[existingIndex];
+      // A partial Spotify preview only establishes the order of the visible prefix.
+      final refreshedTracks = <PlaylistTrack>[...importedTracks];
+      if (preserveUnseenTracks) {
+        final visible = onlineTrackIds.toSet();
+        final previous = current.onlineTrackIds?.toSet();
+        for (final track in current.tracks) {
+          if ((previous?.contains(track.identityKey) ??
+                  track.spotify != null) &&
+              !visible.contains(track.identityKey)) {
+            refreshedTracks.add(track);
+          }
+        }
+      }
       final tracks = synchronizeTracks
           ? _synchronizeTrackLists(
               current.tracks,
-              importedTracks,
+              refreshedTracks,
               previousOnlineTrackIds: current.onlineTrackIds,
             )
           : _mergeTrackLists(current.tracks, importedTracks).tracks;
       final storedOnlineTrackIds = synchronizeTracks
-          ? onlineTrackIds
+          ? _uniqueTrackIds(refreshedTracks)
           : _mergeOnlineTrackIds(current.onlineTrackIds, onlineTrackIds);
       final updated = LocalPlaylist(
         id: current.id,
@@ -153,9 +200,13 @@ class LocalPlaylistNotifier extends Notifier<List<LocalPlaylist>> {
         originPlaylistId: originId,
         originSourceCode: sourceCode,
         onlineTrackIds: storedOnlineTrackIds,
-        coverUrl: _nonEmpty(online.coverUrl) ?? current.coverUrl,
-        creator: _nonEmpty(online.creator) ?? current.creator,
-        description: _nonEmpty(online.description) ?? current.description,
+        originTrackCount: originTrackCount,
+        originPreviewCount: sourceCode == 'spotify'
+            ? importedTracks.length
+            : null,
+        coverUrl: _nonEmpty(coverUrl) ?? current.coverUrl,
+        creator: _nonEmpty(creator) ?? current.creator,
+        description: _nonEmpty(description) ?? current.description,
       );
       final next = [...state]..[existingIndex] = updated;
       state = List<LocalPlaylist>.unmodifiable(next);
@@ -166,16 +217,20 @@ class LocalPlaylistNotifier extends Notifier<List<LocalPlaylist>> {
     final now = DateTime.now();
     final imported = LocalPlaylist(
       id: _newId(prefix: 'online'),
-      name: _uniqueImportedName(online.name),
+      name: _uniqueImportedName(name),
       tracks: _mergeTrackLists(const [], importedTracks).tracks,
       createdAt: now,
       updatedAt: now,
       originPlaylistId: originId.isEmpty ? null : originId,
       originSourceCode: sourceCode,
       onlineTrackIds: onlineTrackIds,
-      coverUrl: _nonEmpty(online.coverUrl),
-      creator: _nonEmpty(online.creator),
-      description: _nonEmpty(online.description),
+      originTrackCount: originTrackCount,
+      originPreviewCount: sourceCode == 'spotify'
+          ? importedTracks.length
+          : null,
+      coverUrl: _nonEmpty(coverUrl),
+      creator: _nonEmpty(creator),
+      description: _nonEmpty(description),
     );
     state = List<LocalPlaylist>.unmodifiable([...state, imported]);
     await _persist();
@@ -218,7 +273,8 @@ class LocalPlaylistNotifier extends Notifier<List<LocalPlaylist>> {
           ...playlist.toJson(),
           'tracks': [
             for (final track in playlist.tracks)
-              if (track.musicInfo != null) track.withoutLocalPath().toJson(),
+              if (track.musicInfo != null || track.spotify != null)
+                track.withoutLocalPath().toJson(),
           ],
         },
     ]);
@@ -269,6 +325,8 @@ class LocalPlaylistNotifier extends Notifier<List<LocalPlaylist>> {
           originPlaylistId: remote.originPlaylistId,
           originSourceCode: remote.originSourceCode,
           onlineTrackIds: remote.onlineTrackIds,
+          originTrackCount: remote.originTrackCount,
+          originPreviewCount: remote.originPreviewCount,
           coverUrl: remote.coverUrl,
           creator: remote.creator,
           description: remote.description,
@@ -407,12 +465,17 @@ class LocalPlaylistNotifier extends Notifier<List<LocalPlaylist>> {
       var playlistChanged = false;
       final tracks = <PlaylistTrack>[];
       for (final track in playlist.tracks) {
-        if (track.identityKey != identityKey) {
+        if (track.identityKey != identityKey &&
+            !(track.spotify != null &&
+                track.sourceCode == music.source.code &&
+                track.musicId == music.id)) {
           tracks.add(track);
           continue;
         }
 
-        final updated = track.mergePreferLocal(downloaded);
+        final updated = track.spotify != null
+            ? track.copyWith(localPath: path, qualityCode: quality.code)
+            : track.mergePreferLocal(downloaded);
         tracks.add(updated);
         if (!_sameTrackSnapshot(track, updated)) {
           playlistChanged = true;
