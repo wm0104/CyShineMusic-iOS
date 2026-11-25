@@ -7,6 +7,8 @@ Future<void> showSongsSortSheet({
   required SongSortMode initialMode,
   required bool initialAscending,
   required void Function(SongSortMode mode, bool ascending) onChanged,
+  VoidCallback? onCustomOrder,
+  bool customSelected = false,
 }) {
   final scheme = Theme.of(context).colorScheme;
   return showModalBottomSheet<void>(
@@ -20,6 +22,8 @@ Future<void> showSongsSortSheet({
       initialMode: initialMode,
       initialAscending: initialAscending,
       onChanged: onChanged,
+      onCustomOrder: onCustomOrder,
+      customSelected: customSelected,
     ),
   );
 }
@@ -29,8 +33,12 @@ class _SongsSortSheet extends StatefulWidget {
     required this.initialMode,
     required this.initialAscending,
     required this.onChanged,
+    this.onCustomOrder,
+    this.customSelected = false,
   });
 
+  final VoidCallback? onCustomOrder;
+  final bool customSelected;
   final SongSortMode initialMode;
   final bool initialAscending;
   final void Function(SongSortMode mode, bool ascending) onChanged;
@@ -42,17 +50,20 @@ class _SongsSortSheet extends StatefulWidget {
 class _SongsSortSheetState extends State<_SongsSortSheet> {
   late SongSortMode _mode;
   late bool _ascending;
+  late bool _customSelected;
 
   @override
   void initState() {
     super.initState();
     _mode = widget.initialMode;
     _ascending = widget.initialAscending;
+    _customSelected = widget.customSelected;
   }
 
   void _selectMode(SongSortMode mode) {
-    if (_mode == mode) return;
+    if (!_customSelected && _mode == mode) return;
     setState(() {
+      _customSelected = false;
       _mode = mode;
       _ascending = mode != SongSortMode.added;
     });
@@ -99,19 +110,35 @@ class _SongsSortSheetState extends State<_SongsSortSheet> {
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12),
                     ),
-                    selected: mode == _mode,
+                    selected: !_customSelected && mode == _mode,
                     selectedTileColor: scheme.secondaryContainer.withValues(
                       alpha: 0.72,
                     ),
                     leading: Icon(mode.icon, size: 21),
                     title: Text(mode.label),
-                    trailing: mode == _mode
+                    trailing: !_customSelected && mode == _mode
                         ? Icon(
                             Icons.check_rounded,
                             color: scheme.onSecondaryContainer,
                           )
                         : null,
                     onTap: () => _selectMode(mode),
+                  ),
+                if (widget.onCustomOrder != null)
+                  ListTile(
+                    minTileHeight: 52,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    selected: _customSelected,
+                    selectedTileColor: scheme.secondaryContainer.withValues(alpha: 0.72),
+                    leading: const Icon(Icons.drag_handle_rounded, size: 21),
+                    title: const Text('自定义排序'),
+                    trailing: _customSelected ? const Icon(Icons.check_rounded) : null,
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      widget.onCustomOrder!();
+                    },
                   ),
                 const SizedBox(height: 16),
                 Padding(
@@ -139,7 +166,7 @@ class _SongsSortSheetState extends State<_SongsSortSheet> {
                     ),
                   ],
                   selected: {_ascending},
-                  onSelectionChanged: _selectDirection,
+                  onSelectionChanged: _customSelected ? null : _selectDirection,
                 ),
               ],
             ),

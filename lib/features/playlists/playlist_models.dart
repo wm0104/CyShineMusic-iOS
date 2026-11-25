@@ -326,6 +326,7 @@ class LocalPlaylist {
     this.originPlaylistId,
     this.originSourceCode,
     this.onlineTrackIds,
+    this.customTrackOrder,
     this.originTrackCount,
     this.originPreviewCount,
     this.coverUrl,
@@ -341,11 +342,21 @@ class LocalPlaylist {
   final String? originPlaylistId;
   final String? originSourceCode;
   final List<String>? onlineTrackIds;
+  final List<String>? customTrackOrder;
   final int? originTrackCount;
   final int? originPreviewCount;
   final String? coverUrl;
   final String? creator;
   final String? description;
+
+  List<PlaylistTrack> get customOrderedTracks {
+    final order = _customOrderForTracks(customTrackOrder, tracks);
+    if (order == null) return List<PlaylistTrack>.unmodifiable(tracks);
+    final byId = {for (final track in tracks) track.identityKey: track};
+    return List<PlaylistTrack>.unmodifiable([
+      for (final id in order) byId[id]!,
+    ]);
+  }
 
   String? get onlinePlaylistId {
     final value = originPlaylistId?.trim();
@@ -366,6 +377,7 @@ class LocalPlaylist {
     List<PlaylistTrack>? tracks,
     DateTime? updatedAt,
     List<String>? onlineTrackIds,
+    List<String>? customTrackOrder,
   }) {
     return LocalPlaylist(
       id: id,
@@ -376,6 +388,10 @@ class LocalPlaylist {
       originPlaylistId: originPlaylistId,
       originSourceCode: originSourceCode,
       onlineTrackIds: onlineTrackIds ?? this.onlineTrackIds,
+      customTrackOrder: _customOrderForTracks(
+        customTrackOrder ?? this.customTrackOrder,
+        tracks ?? this.tracks,
+      ),
       originTrackCount: originTrackCount,
       originPreviewCount: originPreviewCount,
       coverUrl: coverUrl,
@@ -394,6 +410,7 @@ class LocalPlaylist {
     if (originPlaylistId != null) 'originPlaylistId': originPlaylistId,
     if (originSourceCode != null) 'originSource': originSourceCode,
     if (onlineTrackIds != null) 'onlineTrackIds': onlineTrackIds,
+    if (customTrackOrder != null) 'customTrackOrder': customTrackOrder,
     if (originTrackCount != null) 'originTrackCount': originTrackCount,
     if (originPreviewCount != null) 'originPreviewCount': originPreviewCount,
     if (coverUrl != null) 'coverUrl': coverUrl,
@@ -433,6 +450,10 @@ class LocalPlaylist {
         _stringOrNull(json['originSource'] ?? json['originSourceCode']),
       ),
       onlineTrackIds: _stringListOrNull(json['onlineTrackIds']),
+      customTrackOrder: _customOrderForTracks(
+        _stringListOrNull(json['customTrackOrder']),
+        tracks,
+      ),
       originPreviewCount: json['originPreviewCount'] is int
           ? json['originPreviewCount'] as int
           : null,
@@ -444,6 +465,22 @@ class LocalPlaylist {
       description: _nonEmpty(_stringOrNull(json['description'])),
     );
   }
+}
+
+// Keep the overlay complete on every track mutation, without changing tracks.
+List<String>? _customOrderForTracks(
+  List<String>? order,
+  List<PlaylistTrack> tracks,
+) {
+  if (order == null) return null;
+  final ids = {for (final track in tracks) track.identityKey};
+  final seen = <String>{};
+  return List<String>.unmodifiable([
+    for (final id in order)
+      if (ids.contains(id) && seen.add(id)) id,
+    for (final track in tracks)
+      if (seen.add(track.identityKey)) track.identityKey,
+  ]);
 }
 
 String normalizePlaylistPath(String path) {

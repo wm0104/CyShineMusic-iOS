@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -18,6 +20,7 @@ import '../search/widgets/quality_picker_sheet.dart';
 import '../search/widgets/search_result_tile.dart';
 import 'playlist_cover_image.dart';
 import 'playlist_store.dart';
+import 'playlist_models.dart';
 import 'spotify_playlist_import.dart';
 import '../shell/shell_navigation.dart';
 
@@ -51,6 +54,10 @@ class _OnlinePlaylistImportPageState
     extends ConsumerState<OnlinePlaylistImportPage> {
   final TextEditingController _inputController = TextEditingController();
   MusicSource _source = MusicSource.all;
+  MusicSource _matchSource = MusicSource.wy;
+  String? _savedPlaylistId;
+  List<PlaylistTrack>? _rematchSnapshot;
+  bool _loadedSaved = false;
   PlaylistInfo? _playlist;
   SpotifyPlaylistPreview? _spotify;
   String? _progress;
@@ -67,6 +74,103 @@ class _OnlinePlaylistImportPageState
     _source = draft.source;
     _playlist = draft.playlist;
     _spotify = draft.spotify;
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_loadedSaved) return;
+    _loadedSaved = true;
+    _savedPlaylistId = GoRouter.maybeOf(context) == null
+        ? null
+        : GoRouterState.of(context).uri.queryParameters['rematch'];
+    if (_savedPlaylistId == null) return;
+    _spotify = null;
+    _playlist = null;
+    final saved = _currentSavedPlaylist();
+    if (saved == null || saved.originSourceCode != 'spotify') {
+      _error = 'Spotify 歌单不存在';
+      return;
+    }
+    _spotify = _savedPreview(saved);
+  }
+
+  LocalPlaylist? _currentSavedPlaylist() {
+    for (final playlist in ref.read(localPlaylistsProvider)) {
+      if (playlist.id == _savedPlaylistId) return playlist;
+    }
+    return null;
+  }
+
+  SpotifyPlaylistPreview _savedPreview(LocalPlaylist saved) => SpotifyPlaylistPreview(
+    id: saved.originPlaylistId ?? saved.id,
+    name: saved.name,
+    tracks: saved.tracks,
+    total: saved.tracks.length,
+    coverUrl: saved.coverUrl,
+  );
+
+  bool _requestActive(Object request) => mounted &&
+      identical(_requestToken, request) &&
+      ModalRoute.of(context)?.isCurrent != false && TickerMode.of(context);
+
+  void _cancelMatching() {
+    _requestToken = null;
+    setState(() { _loading = false; _progress = null; });
+  }
+
+  Future<void> _rematch() async {
+    final current = _savedPlaylistId == null ? null : _currentSavedPlaylist();
+    if (_savedPlaylistId != null && current == null) {
+      showAppToast(context, '歌单不存在', type: AppToastType.error);
+      return;
+    }
+    var preview = current == null ? _spotify : _savedPreview(current);
+    if (preview == null || _loading) return;
+    if (current != null && _rematchSnapshot != null && _spotify != null) {
+      final baseline = {for (final track in _rematchSnapshot!) track.identityKey: track};
+      final ids = current.tracks.map((track) => track.identityKey).toSet();
+      if (ids.length != baseline.length || !ids.containsAll(baseline.keys)) {
+        showAppToast(context, '歌单歌曲已变化，请重新补配', type: AppToastType.error);
+        return;
+      }
+      final pending = {for (final track in _spotify!.tracks) track.identityKey: track};
+      final tracks = [for (final track in current.tracks) (() {
+        final match = pending[track.identityKey];
+        if (!track.isUnmatchedSpotify || match == null || match.isUnmatchedSpotify ||
+            jsonEncode(track.spotify?.toJson()) != jsonEncode(match.spotify?.toJson())) return track;
+        return track.copyWith(musicId: match.musicId, sourceCode: match.sourceCode,
+          qualityCode: match.qualityCode, albumName: match.albumName,
+          picUrl: match.picUrl, musicJson: match.musicJson);
+      })()];
+      preview = SpotifyPlaylistPreview(id: preview.id, name: preview.name, tracks: tracks,
+        total: preview.total, creator: preview.creator, coverUrl: preview.coverUrl);
+    }
+    final matchingPreview = preview;
+    final request = Object();
+    _requestToken = request;
+    setState(() { _loading = true; _error = null; _progress = null; });
+    try {
+      final tracks = await ref.read(spotifyPlaylistImporterProvider).rematchUnmatched(
+        matchingPreview.tracks,
+        source: _matchSource,
+        cancelled: () => !_requestActive(request),
+        onProgress: (done, total) {
+          if (_requestActive(request)) setState(() => _progress = '正在匹配音源 · $done / $total');
+        },
+      );
+      if (!_requestActive(request)) return;
+      setState(() {
+        _rematchSnapshot ??= current?.tracks ?? matchingPreview.tracks;
+        _spotify = SpotifyPlaylistPreview(id: matchingPreview.id, name: matchingPreview.name,
+          tracks: tracks, total: matchingPreview.total, creator: matchingPreview.creator, coverUrl: matchingPreview.coverUrl);
+      });
+      if (_savedPlaylistId == null) _rememberDraft();
+    } catch (error) {
+      if (_requestActive(request)) showAppToast(context, describeDioError(error), type: AppToastType.error);
+    } finally {
+      if (mounted && identical(_requestToken, request)) setState(() => _loading = false);
+    }
   }
 
   @override
@@ -97,6 +201,10 @@ class _OnlinePlaylistImportPageState
                   child: _ImportForm(
                     controller: _inputController,
                     source: _source,
+                    matchSource: _matchSource,
+                    saved: _savedPlaylistId != null,
+                    onMatchSourceChanged: (source) => setState(() => _matchSource = source),
+                    onCancel: _cancelMatching,
                     loading: _loading,
                     onSourceChanged: (source) {
                       setState(() {
@@ -109,12 +217,19 @@ class _OnlinePlaylistImportPageState
                     },
                     onInputChanged: _handleInputChanged,
                     onClear: _clearInput,
-                    onParse: _parse,
+                    onParse: _savedPlaylistId == null ? _parse : _rematch,
                   ),
                 ),
               ),
             ),
           ),
+          if (_spotify != null && _spotify!.matched < _spotify!.tracks.length &&
+              _savedPlaylistId == null && !_loading)
+            SliverToBoxAdapter(child: Center(child: TextButton.icon(
+              onPressed: _saving ? null : _rematch,
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('补配未匹配项'),
+            ))),
           if (_loading)
             SliverFillRemaining(
               hasScrollBody: false,
@@ -154,7 +269,7 @@ class _OnlinePlaylistImportPageState
                       count: spotify?.tracks.length ?? _playlist!.tracks.length,
                       spotify: spotify,
                       saving: _saving,
-                      onSave: _savePlaylist,
+                      onSave: _savedPlaylistId != null && _rematchSnapshot == null ? null : _savePlaylist,
                     ),
                   ),
                 ),
@@ -234,14 +349,15 @@ class _OnlinePlaylistImportPageState
             .read(spotifyPlaylistImporterProvider)
             .read(
               link,
-              cancelled: () => !mounted || !identical(_requestToken, request),
+              source: _matchSource,
+              cancelled: () => !_requestActive(request),
               onProgress: (done, total) {
                 if (mounted && identical(_requestToken, request)) {
                   setState(() => _progress = '正在匹配音源 · $done / $total');
                 }
               },
             );
-        if (!mounted || !identical(_requestToken, request)) return;
+        if (!_requestActive(request)) return;
         setState(() {
           _loading = false;
           _spotify = spotify;
@@ -252,27 +368,44 @@ class _OnlinePlaylistImportPageState
       final playlist = await ref
           .read(musicApiProvider)
           .parsePlaylist(input: input, source: _source);
-      if (!mounted || !identical(_requestToken, request)) return;
+      if (!_requestActive(request)) return;
       setState(() {
         _loading = false;
         _playlist = playlist;
       });
       _rememberDraft(playlist: playlist);
     } catch (error) {
-      if (!mounted || !identical(_requestToken, request)) return;
+      if (!_requestActive(request)) return;
       setState(() {
         _loading = false;
         _error = describeDioError(error);
       });
       _rememberDraft(playlist: null);
+    } finally {
+      if (mounted && identical(_requestToken, request)) {
+        setState(() { _loading = false; _progress = null; });
+      }
     }
   }
 
   Future<void> _savePlaylist() async {
     final playlist = _playlist;
     final spotify = _spotify;
-    if ((playlist == null && spotify == null) || _saving) return;
+    if ((playlist == null && spotify == null) || _saving || _loading) return;
     try {
+      if (_savedPlaylistId != null) {
+        final snapshot = _rematchSnapshot;
+        if (snapshot == null || spotify == null) return;
+        setState(() => _saving = true);
+        final changed = await ref.read(localPlaylistsProvider.notifier).patchSpotifyMatches(
+          _savedPlaylistId!, snapshot: snapshot, replacements: spotify.tracks,
+        );
+        if (!mounted) return;
+        setState(() { _saving = false; _rematchSnapshot = null; });
+        showAppToast(context, '已补配 $changed 首', type: AppToastType.success);
+        context.pop();
+        return;
+      }
       if (spotify != null && !spotify.complete) {
         final accepted = await showDialog<bool>(
           context: context,
@@ -349,6 +482,7 @@ class _OnlinePlaylistImportPageState
   }
 
   void _rememberDraft({PlaylistInfo? playlist}) {
+    if (_savedPlaylistId != null) return;
     ref
         .read(_onlinePlaylistDraftProvider.notifier)
         .state = _OnlinePlaylistDraft(
@@ -369,6 +503,10 @@ class _ImportForm extends StatelessWidget {
     required this.onInputChanged,
     required this.onClear,
     required this.onParse,
+    required this.matchSource,
+    required this.onMatchSourceChanged,
+    required this.onCancel,
+    required this.saved,
   });
 
   final TextEditingController controller;
@@ -378,6 +516,10 @@ class _ImportForm extends StatelessWidget {
   final ValueChanged<String> onInputChanged;
   final VoidCallback onClear;
   final VoidCallback onParse;
+  final MusicSource matchSource;
+  final ValueChanged<MusicSource> onMatchSourceChanged;
+  final VoidCallback onCancel;
+  final bool saved;
 
   @override
   Widget build(BuildContext context) {
@@ -394,12 +536,16 @@ class _ImportForm extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (!saved) ...[
+          const Text('歌单来源'),
+          const SizedBox(height: 8),
           LayoutBuilder(
             builder: (context, constraints) {
               final useVerticalLayout =
                   constraints.maxWidth < 288 ||
                   MediaQuery.textScalerOf(context).scale(1) > 1.3;
               final segmentedButton = SegmentedButton<MusicSource>(
+                key: const ValueKey('playlist-source-selector'),
                 direction: useVerticalLayout ? Axis.vertical : Axis.horizontal,
                 style: const ButtonStyle(
                   minimumSize: WidgetStatePropertyAll(Size(0, 48)),
@@ -480,16 +626,34 @@ class _ImportForm extends StatelessWidget {
             onChanged: onInputChanged,
             onSubmitted: (_) => onParse(),
           ),
+          ],
+          const SizedBox(height: 12),
+          const Text('歌曲匹配平台（Spotify）'),
+          const SizedBox(height: 8),
+          LayoutBuilder(builder: (context, constraints) => SegmentedButton<MusicSource>(
+            key: const ValueKey('spotify-match-source-selector'),
+            direction: constraints.maxWidth < 320 || MediaQuery.textScalerOf(context).scale(1) > 1.3
+                ? Axis.vertical : Axis.horizontal,
+            showSelectedIcon: false,
+            segments: const [
+              ButtonSegment(value: MusicSource.wy, label: Text('网易云')),
+              ButtonSegment(value: MusicSource.tx, label: Text('QQ')),
+              ButtonSegment(value: MusicSource.kw, label: Text('酷我')),
+              ButtonSegment(value: MusicSource.kg, label: Text('酷狗')),
+            ],
+            selected: {matchSource},
+            onSelectionChanged: loading ? null : (values) => onMatchSourceChanged(values.first),
+          )),
           const SizedBox(height: 12),
           FilledButton.icon(
-            onPressed: loading ? null : onParse,
+            onPressed: loading ? onCancel : onParse,
             icon: loading
                 ? const SizedBox.square(
                     dimension: 18,
                     child: CircularProgressIndicator(strokeWidth: 2.2),
                   )
                 : const Icon(Icons.travel_explore_rounded),
-            label: Text(loading ? '解析中' : '解析歌单'),
+            label: Text(loading ? '取消' : saved ? '补配未匹配项' : '解析歌单'),
           ),
         ],
       ),
@@ -516,7 +680,7 @@ class _ParsedPlaylistHeader extends StatelessWidget {
   final int count;
   final SpotifyPlaylistPreview? spotify;
   final bool saving;
-  final VoidCallback onSave;
+  final VoidCallback? onSave;
 
   @override
   Widget build(BuildContext context) {

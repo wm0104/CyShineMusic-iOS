@@ -475,7 +475,11 @@ class PlaylistSdk {
     );
     return buildMusicInfo(
       name: item['name']?.toString() ?? '',
-      singer: _wySinger(item['ar'] as List? ?? item['artists'] as List?),
+      singer: _wySinger(item['ar'] is List
+          ? item['ar'] as List
+          : item['artists'] is List ? item['artists'] as List : null),
+      artists: normalizeArtistCredits(item['ar'] is List ? item['ar'] : item['artists']),
+      durationMs: positiveDurationMs(item['dt'] ?? item['duration']),
       source: MusicSource.wy,
       songId: id,
       qualitys: qualities,

@@ -168,6 +168,7 @@ void main() {
       find.byType(TextField),
       'https://music.163.com/playlist?id=1',
     );
+    await tester.ensureVisible(find.text('解析歌单'));
     await tester.tap(find.text('解析歌单'));
     await tester.pumpAndSettle();
     expect(find.text('已解析歌单'), findsOneWidget);
@@ -180,6 +181,7 @@ void main() {
     await tester.pump();
     expect(find.text('已解析歌单'), findsNothing);
 
+    await tester.ensureVisible(find.text('解析歌单'));
     await tester.tap(find.text('解析歌单'));
     await tester.pumpAndSettle();
     expect(find.text('已解析歌单'), findsOneWidget);
@@ -219,7 +221,7 @@ void main() {
     await tester.pumpAndSettle();
 
     final sourceControl = tester.widget<SegmentedButton<MusicSource>>(
-      find.byType(SegmentedButton<MusicSource>),
+      find.byKey(const ValueKey('playlist-source-selector')),
     );
     expect(sourceControl.direction, Axis.vertical);
     expect(tester.takeException(), isNull);
@@ -234,7 +236,7 @@ void main() {
     await tester.pumpWidget(_testApp(prefs, const OnlinePlaylistImportPage()));
     await tester.pumpAndSettle();
 
-    final sourceFinder = find.byType(SegmentedButton<MusicSource>);
+    final sourceFinder = find.byKey(const ValueKey('playlist-source-selector'));
     final sourceControl = tester.widget<SegmentedButton<MusicSource>>(
       sourceFinder,
     );
@@ -265,12 +267,12 @@ void main() {
 
     await tester.pumpWidget(_testApp(prefs, const OnlinePlaylistImportPage()));
     await tester.pumpAndSettle();
-    expect(find.text('自动'), findsOneWidget);
-    expect(find.text('酷我'), findsOneWidget);
-    expect(find.text('酷狗'), findsOneWidget);
-    expect(find.text('网易云'), findsOneWidget);
-    expect(find.text('QQ'), findsOneWidget);
-    expect(find.text('咪咕'), findsOneWidget);
+    final sourceControl = find.byKey(const ValueKey('playlist-source-selector'));
+    for (final name in ['自动', '酷我', '酷狗', '网易云', 'QQ', '咪咕']) {
+      expect(find.descendant(of: sourceControl, matching: find.text(name)), findsOneWidget);
+    }
+    final matchControl = find.byKey(const ValueKey('spotify-match-source-selector'));
+    expect(tester.widget<SegmentedButton<MusicSource>>(matchControl).selected, {MusicSource.wy});
     expect(find.text('解析歌单'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });

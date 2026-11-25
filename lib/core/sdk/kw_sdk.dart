@@ -46,6 +46,14 @@ class KwSdk {
         buildMusicInfo(
           name: decodeName(info['SONGNAME']),
           singer: _formatSinger(decodeName(info['ARTIST'])),
+          artists: RegExp(r'[&、,，;/]').hasMatch(decodeName(info['ARTIST']))
+              ? null
+              : normalizeArtistCredits([
+                  {'id': info['ARTISTID'], 'name': decodeName(info['ARTIST'])},
+                ]),
+          durationMs: positiveDurationMs(
+            (num.tryParse(info['DURATION']?.toString() ?? '') ?? 0) * 1000,
+          ),
           source: MusicSource.kw,
           songId: songId,
           qualitys: qualities,

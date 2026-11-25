@@ -181,6 +181,10 @@ class TxSdk {
         buildMusicInfo(
           name: (item['title'] ?? item['name'])?.toString() ?? '',
           singer: formatSingerName(item['singer']),
+          artists: normalizeArtistCredits(item['singer'], idKey: 'mid'),
+          durationMs: positiveDurationMs(
+            (num.tryParse(item['interval']?.toString() ?? '') ?? 0) * 1000,
+          ),
           source: MusicSource.tx,
           songId: item['mid'],
           qualitys: qualities,

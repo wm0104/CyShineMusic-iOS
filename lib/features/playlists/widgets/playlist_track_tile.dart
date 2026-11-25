@@ -26,6 +26,8 @@ class PlaylistTrackTile extends ConsumerWidget {
     required this.onPlay,
     required this.onDownload,
     required this.onRemove,
+    this.reordering = false,
+    this.reorderEnabled = true,
   });
 
   final String playlistId;
@@ -39,6 +41,8 @@ class PlaylistTrackTile extends ConsumerWidget {
   final VoidCallback onPlay;
   final VoidCallback? onDownload;
   final VoidCallback onRemove;
+  final bool reordering;
+  final bool reorderEnabled;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -81,11 +85,11 @@ class PlaylistTrackTile extends ConsumerWidget {
       child: Material(
         color: Colors.transparent,
         child: Semantics(
-          button: true,
+          button: !reordering,
           selected: batchMode && selected,
-          hint: batchMode ? '轻触选择歌曲' : '轻触播放',
+          hint: reordering ? '拖动右侧手柄整理顺序' : (batchMode ? '轻触选择歌曲' : '轻触播放'),
           child: InkWell(
-            onTap: batchMode
+            onTap: reordering ? null : batchMode
                 ? (selectionEnabled ? onToggleSelected : null)
                 : onPlay,
             child: Padding(
@@ -188,7 +192,20 @@ class PlaylistTrackTile extends ConsumerWidget {
                           ),
                         );
                       },
-                      child: batchMode
+                      child: reordering
+                          ? ReorderableDragStartListener(
+                              key: ValueKey('playlist-reorder-${item.track.identityKey}'),
+                              index: index,
+                              enabled: reorderEnabled,
+                              child: const SizedBox.square(
+                                dimension: 44,
+                                child: Tooltip(
+                                  message: '拖动调整顺序',
+                                  child: Icon(Icons.drag_handle_rounded),
+                                ),
+                              ),
+                            )
+                          : batchMode
                           ? SizedBox.square(
                               key: const ValueKey('playlist-select-action'),
                               dimension: 44,
@@ -240,7 +257,7 @@ class PlaylistTrackTile extends ConsumerWidget {
     return Slidable(
       key: ValueKey('playlist-track-slide-${item.track.id}'),
       groupTag: 'playlist-tracks',
-      enabled: !batchMode,
+      enabled: !batchMode && !reordering,
       endActionPane: ActionPane(
         motion: const BehindMotion(),
         extentRatio: 0.24,

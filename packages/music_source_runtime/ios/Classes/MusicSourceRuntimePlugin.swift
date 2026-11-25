@@ -129,7 +129,9 @@ final class SourceScriptSession: NSObject {
       // 靠它做版本识别 / 更新检查；iOS 侧漏了会导致这些音源在初始化阶段异常。
       info["rawScript"] = script
       metadata = info
-      startLoad(script: script, metadata: info, result: result)
+      startLoad(script: script,
+                playbackPolicyScript: args["playbackPolicyScript"] as? String ?? "",
+                metadata: info, result: result)
 
     case "resolve":
       guard let args = call.arguments as? [String: Any] else {
@@ -154,6 +156,7 @@ final class SourceScriptSession: NSObject {
   // MARK: load
 
   private func startLoad(script: String,
+                         playbackPolicyScript: String,
                          metadata: [String: String],
                          result: @escaping FlutterResult) {
     jsQueue.async {
@@ -181,7 +184,8 @@ final class SourceScriptSession: NSObject {
         // ⚠️ 执行顺序必须与 Android 的 createRuntime() 完全一致：
         //   1. evaluate(preload)                    —— 只定义 music_source_setup
         //   2. music_source_setup(metadataJson)     —— 在这里才创建 globalThis.lx
-        //   3. evaluate(音源脚本)                    —— 脚本里 lx.on / lx.send 才可用
+        //   3. evaluate(playbackPolicyScript)      —— 宿主约束先于源脚本生效
+        //   4. evaluate(音源脚本)                    —— 脚本里 lx.on / lx.send 才可用
         // 曾经把 2 和 3 写反，结果脚本跑的时候 lx 还是 undefined，
         // 一上来就 TypeError；叠加 exceptionHandler 把异常吞掉，
         // 最终只表现为「音源初始化超时」，极难定位。
@@ -207,6 +211,10 @@ final class SourceScriptSession: NSObject {
         try self.throwIfPendingException(context, fallback: "音源运行时装配失败")
         self.emitLog(level: "info", message: "music_source_setup 完成，开始执行音源脚本")
 
+        // Keep the policy separate so currentScriptInfo.rawScript stays original.
+        if !playbackPolicyScript.isEmpty {
+          try self.evaluateScript(playbackPolicyScript, in: context)
+        }
         try self.evaluateScript(script, in: context)
         self.drainMicrotasks(context)
         try self.throwIfPendingException(context, fallback: "音源脚本执行失败")

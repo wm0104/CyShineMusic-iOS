@@ -112,6 +112,11 @@ public final class MusicSourceRuntimeBridge implements MethodChannel.MethodCallH
             jsContext.getGlobalObject()
                 .getJSFunction("music_source_setup")
                 .call(metadata.toString());
+            // Keep the policy separate so currentScriptInfo.rawScript stays original.
+            String playbackPolicyScript = stringValue(arguments.get("playbackPolicyScript"));
+            if (!playbackPolicyScript.isEmpty()) {
+                jsContext.evaluate(playbackPolicyScript);
+            }
             jsContext.evaluate(script);
         } catch (Throwable error) {
             failLoad(messageOf(error));

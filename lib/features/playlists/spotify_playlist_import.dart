@@ -8,6 +8,7 @@ import '../../core/models/enums.dart';
 import '../../core/models/music_info.dart';
 import '../../core/music_sources/music_source_controller.dart';
 import '../../core/sdk/internal/sdk_http.dart';
+import '../../core/services/app_logger.dart';
 import '../../core/storage/settings_store.dart';
 import 'playlist_models.dart';
 
@@ -108,6 +109,7 @@ class SpotifyPlaylistImporter {
 
   Future<SpotifyPlaylistPreview> read(
     Uri link, {
+    MusicSource source = MusicSource.wy,
     void Function(int done, int total)? onProgress,
     bool Function()? cancelled,
   }) async {
@@ -127,40 +129,12 @@ class SpotifyPlaylistImporter {
     final entity = _parseEntity(embed.body, id);
     final total = await totalRequest;
     final originals = _parseTracks(entity['trackList']);
-    final platforms = await enabledPlatforms();
-    final results = <PlaylistTrack>[
-      for (final track in originals) PlaylistTrack.fromSpotify(track, null),
-    ];
-    var nextIndex = 0;
-    var done = 0;
-    onProgress?.call(done, results.length);
-    Future<void> matchNext() async {
-      while (nextIndex < results.length && cancelled?.call() != true) {
-        final index = nextIndex++;
-        final track = originals[index];
-        if (track.type == 'track' && track.artist.isNotEmpty) {
-          for (final platform in platforms) {
-            if (cancelled?.call() == true) return;
-            try {
-              final candidates = await search(
-                '${track.title} ${track.artist}',
-                platform,
-              );
-              final match = _bestMatch(track, candidates, platform);
-              if (match != null) {
-                results[index] = PlaylistTrack.fromSpotify(track, match);
-                break;
-              }
-            } on Exception {
-              // A platform can fail independently of the other sources.
-            }
-          }
-        }
-        onProgress?.call(++done, results.length);
-      }
-    }
-
-    await Future.wait(List.generate(3, (_) => matchNext()));
+    final results = await rematchUnmatched(
+      [for (final track in originals) PlaylistTrack.fromSpotify(track, null)],
+      source: source,
+      onProgress: onProgress,
+      cancelled: cancelled,
+    );
     final art = entity['coverArt'];
     final sources = art is Map ? art['sources'] : null;
     final cover = sources is List && sources.isNotEmpty ? sources.first : null;
@@ -170,9 +144,67 @@ class SpotifyPlaylistImporter {
       creator: entity['subtitle'] as String?,
       coverUrl: cover is Map ? cover['url'] as String? : null,
       total: total,
-      hasMatchingPlatforms: platforms.isNotEmpty,
+      hasMatchingPlatforms: true,
       tracks: List.unmodifiable(results),
     );
+  }
+
+  Future<List<PlaylistTrack>> rematchUnmatched(
+    List<PlaylistTrack> tracks, {
+    MusicSource source = MusicSource.wy,
+    void Function(int done, int total)? onProgress,
+    bool Function()? cancelled,
+  }) async {
+    final snapshot = List<PlaylistTrack>.unmodifiable(tracks);
+    if (cancelled?.call() == true) return snapshot;
+    final platforms = await enabledPlatforms();
+    if (cancelled?.call() == true) return snapshot;
+    if (source == MusicSource.all || !platforms.contains(source)) {
+      throw StateError('${source.label}未启用或不可用');
+    }
+    final results = [...snapshot];
+    final indices = [
+      for (var i = 0; i < snapshot.length; i++)
+        if (snapshot[i].isUnmatchedSpotify) i,
+    ];
+    var nextIndex = 0;
+    var done = 0;
+    onProgress?.call(0, indices.length);
+    Future<void> matchNext() async {
+      while (nextIndex < indices.length && cancelled?.call() != true) {
+        final index = indices[nextIndex++];
+        final original = snapshot[index];
+        final track = original.spotify!;
+        if (track.type == 'track' && track.artist.isNotEmpty) {
+          try {
+            var candidates = await search('${track.title} ${track.artist}', source);
+            if (cancelled?.call() == true) return;
+            // Only empty searches get one bounded retry, never ambiguous hits.
+            if (candidates.isEmpty) {
+              candidates = await search(track.title, source);
+              if (cancelled?.call() == true) return;
+            }
+            final match = _bestMatch(track, candidates, source);
+            if (match != null) {
+              results[index] = PlaylistTrack.fromSpotify(track, match).copyWith(
+                localPath: original.localPath,
+              );
+            }
+          } on Exception catch (error) {
+            await AppLogger.write(
+              'spotify-import',
+              '${source.code} search failed (${error.runtimeType})',
+            );
+            throw StateError('${source.label}搜索失败，请重试');
+          }
+        }
+        if (cancelled?.call() == true) return;
+        onProgress?.call(++done, indices.length);
+      }
+    }
+
+    await Future.wait(List.generate(3, (_) => matchNext()));
+    return cancelled?.call() == true ? snapshot : List.unmodifiable(results);
   }
 
   Future<int?> _readTotal(String id) async {
@@ -270,6 +302,57 @@ String _artists(String names) {
   return parts.join('|');
 }
 
+int? _exactDurationMs(MusicInfo music) {
+  final value = music.meta.raw['durationMs'];
+  return value is int && value > 0 ? value : null;
+}
+
+int? _durationMs(MusicInfo music) {
+  final exact = _exactDurationMs(music);
+  if (exact != null) return exact;
+  final parts = music.interval?.split(':').map(int.tryParse).toList();
+  if (parts == null ||
+      parts.length < 2 ||
+      parts.length > 3 ||
+      parts.any((part) => part == null || part < 0) ||
+      parts.skip(1).any((part) => part! >= 60)) {
+    return null;
+  }
+  final ms = parts.fold<int>(0, (n, part) => n * 60 + part!) * 1000;
+  return ms > 0 ? ms : null;
+}
+
+bool? _knownExplicit(MusicInfo music) {
+  final value = music.meta.raw['isExplicit'] ?? music.raw['isExplicit'];
+  return value is bool ? value : null;
+}
+
+String _recordingTags(String value) {
+  final tags = <String>{};
+  for (final tag in [
+    r'\blive\b|现场', r'\bremix\b|混音', r'\bclean\b',
+    r'\binstrumental\b|伴奏', r'\bkaraoke\b', r'\bcover\b|翻唱',
+    r'\bsped[ -]?up\b|\bspeed[ -]?up\b|加速',
+    r'\bslowed\b|慢速|降速', r'\bacoustic\b', r'\bremaster(?:ed)?\b',
+  ]) {
+    if (RegExp(tag, caseSensitive: false).hasMatch(value)) tags.add(tag);
+  }
+  return (tags.toList()..sort()).join('|');
+}
+
+bool _sameRelease(MusicInfo a, MusicInfo b) {
+  final duration = _exactDurationMs(a);
+  // Second-only legacy data is not proof that different IDs are duplicates.
+  return duration != null && duration == _exactDurationMs(b) &&
+      _normalize(a.name) == _normalize(b.name) &&
+      _artists(a.singer) == _artists(b.singer) &&
+      _normalize(a.albumName).isNotEmpty &&
+      _normalize(a.albumName) == _normalize(b.albumName) &&
+      _recordingTags('${a.name} ${a.albumName}') ==
+          _recordingTags('${b.name} ${b.albumName}') &&
+      _knownExplicit(a) == _knownExplicit(b);
+}
+
 MusicInfo? _bestMatch(
   SpotifyTrackMetadata track,
   List<MusicInfo> candidates,
@@ -278,41 +361,49 @@ MusicInfo? _bestMatch(
   final title = _normalize(track.title);
   final artist = _normalize(track.artist);
   if (title.isEmpty || artist.isEmpty) return null;
-  MusicInfo? best;
+  final best = <MusicInfo>[];
   int? smallestDifference;
-  var ambiguous = false;
   for (final candidate in candidates) {
     if (candidate.source != source ||
         candidate.id.isEmpty ||
         _normalize(candidate.name) != title ||
+        _recordingTags('${candidate.name} ${candidate.albumName}') !=
+            _recordingTags(track.title) ||
+        (track.explicit != null &&
+            _knownExplicit(candidate) != null &&
+            track.explicit != _knownExplicit(candidate)) ||
         (_normalize(candidate.singer) != artist &&
             _artists(candidate.singer) != _artists(track.artist))) {
       continue;
     }
-    final parts = candidate.interval?.split(':').map(int.tryParse).toList();
+    final ms = _durationMs(candidate);
     final int difference;
     if (track.durationMs != null && track.durationMs! > 0) {
-      if (parts == null ||
-          parts.length < 2 ||
-          parts.length > 3 ||
-          parts.contains(null)) {
-        continue;
-      }
-      final ms = parts.fold<int>(0, (n, part) => n * 60 + part!) * 1000;
+      if (ms == null) continue;
       difference = (ms - track.durationMs!).abs();
       if (difference > 4000) continue;
     } else {
       difference = 0;
     }
     if (smallestDifference == null || difference < smallestDifference) {
-      best = candidate;
+      best
+        ..clear()
+        ..add(candidate);
       smallestDifference = difference;
-      ambiguous = false;
-    } else if (difference == smallestDifference && candidate.id != best?.id) {
-      ambiguous = true;
+    } else if (difference == smallestDifference) {
+      best.add(candidate);
     }
   }
-  return ambiguous ? null : best;
+  if (best.isEmpty) return null;
+  final first = best.first;
+  for (final candidate in best.skip(1)) {
+    if (candidate.id != first.id && !_sameRelease(first, candidate)) {
+      return null;
+    }
+  }
+  // ID orders equivalent entries only; it says nothing about audio quality.
+  best.sort((a, b) => a.id.compareTo(b.id));
+  return best.first;
 }
 
 final spotifyPlaylistImporterProvider = Provider<SpotifyPlaylistImporter>((

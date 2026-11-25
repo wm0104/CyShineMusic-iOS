@@ -12,6 +12,7 @@ import 'core/models/online_collection_kind.dart';
 import 'core/models/playlist_summary.dart';
 import 'core/ui/container_transform.dart';
 import 'core/ui/skippable_exit_transition.dart';
+import 'features/player/player_artists_page.dart';
 import 'features/playlists/online_playlist_import_page.dart';
 import 'features/playlists/playlist_detail_page.dart';
 import 'features/playlists/playlist_management_page.dart';
@@ -101,10 +102,32 @@ GoRouter createAppRouter({
                     },
                   ),
                   GoRoute(
+                    path: '/discover/track-artists',
+                    pageBuilder: (context, state) => _fadeThroughPage(
+                      context,
+                      key: state.pageKey,
+                      extra: state.extra,
+                      child: _shellPageContent(state, child: const PlayerArtistsPage()),
+                    ),
+                  ),
+                  GoRoute(
                     path: '/discover/artists/:source/:id',
                     pageBuilder: (context, state) {
                       final source = MusicSource.fromCode(
                         state.pathParameters['source'] ?? '',
+                      );
+                      final from = state.uri.queryParameters['from'];
+                      final VoidCallback? onBack = switch (from) {
+                        'player' => () => returnToPlayerFromArtists(context),
+                        'track-artists' => () => context.go('/discover/track-artists'),
+                        _ => null,
+                      };
+                      final detail = OnlinePlaylistDetailPage(
+                        source: source,
+                        playlistId: state.pathParameters['id'] ?? '',
+                        kind: OnlineCollectionKind.artist,
+                        summary: _routePayload<PlaylistSummary>(state.extra),
+                        onBack: onBack,
                       );
                       return _containerTransformPage(
                         context,
@@ -112,13 +135,10 @@ GoRouter createAppRouter({
                         extra: state.extra,
                         child: _shellPageContent(
                           state,
-                          child: OnlinePlaylistDetailPage(
-                            source: source,
-                            playlistId: state.pathParameters['id'] ?? '',
-                            kind: OnlineCollectionKind.artist,
-                            summary: _routePayload<PlaylistSummary>(
-                              state.extra,
-                            ),
+                          child: onBack == null ? detail : ArtistNavigationBack(
+                            location: state.uri.path,
+                            onBack: onBack,
+                            child: detail,
                           ),
                         ),
                       );

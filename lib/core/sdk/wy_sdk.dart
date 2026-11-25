@@ -170,7 +170,9 @@ class WySdk {
       out.add(
         buildMusicInfo(
           name: item['name']?.toString() ?? '',
-          singer: _singer(item['ar'] as List?),
+          singer: _singer(item['ar'] is List ? item['ar'] as List : null),
+          artists: normalizeArtistCredits(item['ar']),
+          durationMs: positiveDurationMs(item['dt']),
           source: MusicSource.wy,
           songId: item['id'],
           qualitys: qualities,

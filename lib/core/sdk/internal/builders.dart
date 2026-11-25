@@ -1,5 +1,6 @@
 import '../../models/enums.dart';
 import '../../models/music_info.dart';
+import '../../ui/cover_image_source.dart';
 import 'format.dart';
 
 // On-device MusicInfo builder. Mirrors lib/musicInfo.ts:toNewMusicInfo from the
@@ -23,6 +24,8 @@ MusicInfo buildMusicInfo({
   String? lrcUrl,
   String? mrcUrl,
   String? trcUrl,
+  int? durationMs,
+  List<Map<String, dynamic>>? artists,
 }) {
   // Build the meta JSON the way toNewMusicInfo did: same key names, only set
   // source-specific extras when non-null so the server-side script gets exactly
@@ -51,6 +54,14 @@ MusicInfo buildMusicInfo({
     },
     'albumId': ?albumId,
   };
+
+  if (durationMs != null && durationMs > 0) {
+    metaJson['durationMs'] = durationMs;
+  }
+  if (artists != null) {
+    final credits = normalizeArtistCredits(artists);
+    if (credits.isNotEmpty) metaJson['artists'] = credits;
+  }
 
   String id;
   switch (source) {
@@ -84,6 +95,43 @@ MusicInfo buildMusicInfo({
   };
 
   return MusicInfo.fromJson(rawJson);
+}
+
+/// Keeps only independent structured credits; never derives IDs from names.
+List<Map<String, dynamic>> normalizeArtistCredits(
+  Object? rows, {
+  String idKey = 'id',
+}) {
+  if (rows is! List) return [];
+  final out = <Map<String, dynamic>>[];
+  final seen = <String>{};
+  for (final row in rows) {
+    if (row is! Map) continue;
+    final value = row[idKey];
+    final id = value is String || value is int ? value.toString().trim() : '';
+    final name = row['name'] is String ? (row['name'] as String).trim() : '';
+    if (id.isEmpty || id == '0' || id.startsWith('-') || name.isEmpty) continue;
+    if (!seen.add(id)) continue;
+    final rawCover = row['coverUrl'] ?? row['img1v1Url'] ?? row['picUrl'];
+    final cover = rawCover is String
+        ? CoverImageSource.normalizeUrl(rawCover)
+        : null;
+    out.add({
+      'id': id,
+      'name': name,
+      if (CoverImageSource.isUsableUrl(cover)) 'coverUrl': cover,
+    });
+  }
+  return out;
+}
+
+/// Parses exact milliseconds without truncating fractional/malformed values.
+int? positiveDurationMs(Object? value) {
+  final number = num.tryParse(value?.toString() ?? '');
+  if (number == null || !number.isFinite || number <= 0 || number != number.roundToDouble()) {
+    return null;
+  }
+  return number.toInt();
 }
 
 /// Converts the structured app model back to the flat legacy music-source shape.

@@ -76,6 +76,8 @@ jobs:
       - name: Verify preload protocol & call order
         run: node tool/verify_preload_protocol.mjs
 
+      - run: node --test test/music_source_runtime_policy_test.cjs
+
       # 自定义播放实时活动已停用：保留旧活动清理和桌面 Widget 同步。
       - name: Verify widget playback bridge
         run: node tool/verify_live_activity_auth.mjs
@@ -122,6 +124,15 @@ jobs:
         run: >-
           flutter test --timeout 2m test/app_update*_test.dart
           test/player_source_fallback_test.dart test/player_audio_handler_test.dart
+
+      - name: Playlist and artist regression tests
+        run: >-
+          flutter test --timeout 2m test/playlist*_test.dart
+          test/spotify*_test.dart test/player_artist*_test.dart
+          test/track_artist_sdk_test.dart test/track_metadata_fixture_test.dart
+          test/artist_search_test.dart test/music_url_resolver_fallback_test.dart
+          test/music_source_runtime_policy_test.dart test/settings_preferences_test.dart
+          test/settings_icon_entry_test.dart
 
       - name: Unit tests
         # 上游测试里有若干依赖真机/网络的诊断用例，失败不阻断出包。

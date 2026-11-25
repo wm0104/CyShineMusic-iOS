@@ -71,6 +71,81 @@ class LocalPlaylistNotifier extends Notifier<List<LocalPlaylist>> {
     return true;
   }
 
+  Future<void> setCustomTrackOrder(
+    String playlistId,
+    List<String> trackIds,
+  ) async {
+    final index = state.indexWhere((playlist) => playlist.id == playlistId);
+    if (index < 0) throw const PlaylistStoreException('歌单不存在');
+    final current = state[index];
+    final ids = {for (final track in current.tracks) track.identityKey};
+    final requested = trackIds.toSet();
+    if (trackIds.length != current.tracks.length ||
+        requested.length != trackIds.length ||
+        !requested.containsAll(ids)) {
+      throw const PlaylistStoreException('歌单歌曲已变化，请重新整理');
+    }
+    final next = [...state];
+    next[index] = current.copyWith(
+      customTrackOrder: trackIds,
+      updatedAt: DateTime.now(),
+    );
+    state = List<LocalPlaylist>.unmodifiable(next);
+    await _persist();
+  }
+
+  Future<int> patchSpotifyMatches(
+    String playlistId, {
+    required List<PlaylistTrack> snapshot,
+    required List<PlaylistTrack> replacements,
+  }) async {
+    final index = state.indexWhere((playlist) => playlist.id == playlistId);
+    if (index < 0) throw const PlaylistStoreException('歌单不存在');
+    final current = state[index];
+    final before = {for (final track in snapshot) track.identityKey: track};
+    final after = {for (final track in replacements) track.identityKey: track};
+    final ids = current.tracks.map((track) => track.identityKey).toSet();
+    if (before.length != snapshot.length ||
+        after.length != replacements.length ||
+        ids.length != current.tracks.length ||
+        ids.length != before.length ||
+        !ids.containsAll(before.keys) ||
+        after.length != before.length ||
+        !ids.containsAll(after.keys)) {
+      throw const PlaylistStoreException('歌单歌曲已变化，请重新补配');
+    }
+    var changed = 0;
+    final tracks = [
+      for (final track in current.tracks) (() {
+        final original = before[track.identityKey]!;
+        final replacement = after[track.identityKey]!;
+        if (!track.isUnmatchedSpotify ||
+            !original.isUnmatchedSpotify ||
+            replacement.isUnmatchedSpotify ||
+            replacement.musicInfo == null ||
+            jsonEncode(track.spotify?.toJson()) != jsonEncode(original.spotify?.toJson()) ||
+            jsonEncode(original.spotify?.toJson()) != jsonEncode(replacement.spotify?.toJson())) {
+          return track;
+        }
+        changed++;
+        return track.copyWith(
+          musicId: replacement.musicId,
+          sourceCode: replacement.sourceCode,
+          qualityCode: replacement.qualityCode,
+          albumName: replacement.albumName,
+          picUrl: replacement.picUrl,
+          musicJson: replacement.musicJson,
+        );
+      })(),
+    ];
+    if (changed == 0) return 0;
+    final next = [...state];
+    next[index] = current.copyWith(tracks: tracks, updatedAt: DateTime.now());
+    state = List<LocalPlaylist>.unmodifiable(next);
+    await _persist();
+    return changed;
+  }
+
   Future<bool> delete(String id) async {
     final next = state.where((playlist) => playlist.id != id).toList();
     if (next.length == state.length) return false;
@@ -200,6 +275,7 @@ class LocalPlaylistNotifier extends Notifier<List<LocalPlaylist>> {
         originPlaylistId: originId,
         originSourceCode: sourceCode,
         onlineTrackIds: storedOnlineTrackIds,
+        customTrackOrder: current.copyWith(tracks: tracks).customTrackOrder,
         originTrackCount: originTrackCount,
         originPreviewCount: sourceCode == 'spotify'
             ? importedTracks.length
@@ -269,14 +345,13 @@ class LocalPlaylistNotifier extends Notifier<List<LocalPlaylist>> {
   List<Map<String, dynamic>> exportForSync() {
     return List<Map<String, dynamic>>.unmodifiable([
       for (final playlist in state)
-        <String, dynamic>{
-          ...playlist.toJson(),
-          'tracks': [
+        playlist.copyWith(
+          tracks: [
             for (final track in playlist.tracks)
               if (track.musicInfo != null || track.spotify != null)
-                track.withoutLocalPath().toJson(),
+                track.withoutLocalPath(),
           ],
-        },
+        ).toJson(),
     ]);
   }
 
@@ -315,11 +390,16 @@ class LocalPlaylistNotifier extends Notifier<List<LocalPlaylist>> {
         for (final track in remote.tracks)
           currentByTrack[track.identityKey]?.mergePreferLocal(track) ?? track,
       ];
+      final tracks = List<PlaylistTrack>.unmodifiable([...localOnly, ...portable]);
       restored.add(
         LocalPlaylist(
           id: remote.id,
           name: remote.name,
-          tracks: List<PlaylistTrack>.unmodifiable([...localOnly, ...portable]),
+          tracks: tracks,
+          customTrackOrder: remote.copyWith(
+            tracks: tracks,
+            customTrackOrder: remote.customTrackOrder ?? current.customTrackOrder,
+          ).customTrackOrder,
           createdAt: remote.createdAt,
           updatedAt: remote.updatedAt,
           originPlaylistId: remote.originPlaylistId,

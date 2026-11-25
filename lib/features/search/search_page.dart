@@ -5,17 +5,11 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart' hide SearchController;
 import 'package:flutter/material.dart' as material show SearchController;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 
 import '../../core/api/music_api.dart';
 import '../shell/shell_bottom_area.dart';
 import '../../core/debug/debug_paint_guard.dart';
 import '../../core/models/enums.dart';
-import '../../core/models/artist_info.dart';
-import '../../core/models/online_collection_kind.dart';
-import '../../core/models/playlist_summary.dart';
-import '../../core/ui/container_transform.dart';
-import '../discovery/widgets/discovery_playlist_cover.dart';
 import '../../core/models/music_info.dart';
 import '../../core/storage/settings_store.dart';
 import '../../core/ui/app_toast.dart';
@@ -32,6 +26,7 @@ import 'search_controller.dart';
 import 'search_toolbar_state.dart';
 import 'widgets/quality_picker_sheet.dart';
 import 'widgets/search_result_tile.dart';
+import 'widgets/artist_result_tile.dart';
 import 'widgets/source_filter_chips.dart';
 import '../shell/shell_navigation.dart';
 
@@ -335,6 +330,9 @@ class _SearchPageState extends ConsumerState<SearchPage> {
 
   void _handleSearchStateChanged(SearchState? previous, SearchState next) {
     if (!mounted) return;
+    if (_controller.text != next.keyword && !(_controller.isAttached && _controller.isOpen)) {
+      _controller.text = next.keyword;
+    }
     if (previous?.category != next.category ||
         (next.category == SearchCategory.artists &&
             previous?.source != next.source)) {
@@ -881,7 +879,7 @@ class _ResultsArea extends StatelessWidget {
             ],
           );
         }
-        if (artists) return _ArtistTile(artist: response.artists[index - 1]);
+        if (artists) return ArtistResultTile(artist: response.artists[index - 1]);
         final music = response.list[index - 1];
         return _ResultTile(
           music: music,
@@ -890,67 +888,6 @@ class _ResultsArea extends StatelessWidget {
           onAddToPlaylist: onAddToPlaylist,
         );
       },
-    );
-  }
-}
-
-class _ArtistTile extends StatelessWidget {
-  const _ArtistTile({required this.artist});
-  final ArtistInfo artist;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return ListTile(
-      key: ValueKey('artist-${artist.source.code}-${artist.id}'),
-      minTileHeight: 62,
-      contentPadding: const EdgeInsets.symmetric(horizontal: 4),
-      horizontalTitleGap: 8,
-      leading: Hero(
-        tag: onlinePlaylistArtworkHeroTag(
-          artist.source,
-          artist.id,
-          kind: OnlineCollectionKind.artist,
-        ),
-        createRectTween: containerTransformHeroRectTween,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: SizedBox.square(
-            dimension: 44,
-            child: DiscoveryPlaylistCover(url: artist.coverUrl, size: 44),
-          ),
-        ),
-      ),
-      title: Text(
-        artist.name,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: TextStyle(
-          fontSize: 14,
-          fontWeight: FontWeight.w600,
-          color: scheme.onSurface,
-        ),
-      ),
-      subtitle: Text(
-        artist.source.label,
-        style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
-      ),
-      trailing: const Icon(Icons.chevron_right_rounded),
-      onTap: () => context.push(
-        '/discover/artists/${artist.source.code}/${Uri.encodeComponent(artist.id)}',
-        extra: ContainerTransformExtra(
-          PlaylistSummary(
-            id: artist.id,
-            name: artist.name,
-            source: artist.source,
-            coverUrl: artist.coverUrl,
-          ),
-          origin: ContainerTransformOrigin.capture(
-            context,
-            color: scheme.surface,
-          ),
-        ),
-      ),
     );
   }
 }

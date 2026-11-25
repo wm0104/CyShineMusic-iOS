@@ -13,8 +13,6 @@ import '../../core/api/dio_factory.dart';
 import '../../core/models/enums.dart';
 import '../../core/music_sources/music_source_controller.dart';
 import '../../core/services/permission_service.dart';
-import '../../core/services/app_icon_service.dart';
-import '../../core/services/app_logger.dart';
 import '../../core/storage/settings_store.dart';
 import '../../core/sync/webdav_sync_controller.dart';
 import '../../core/ui/app_toast.dart';
@@ -30,7 +28,6 @@ import '../songs/local_song_scan_cache.dart';
 import '../update/app_update_prompt.dart';
 import '../update/app_update_section.dart';
 import 'widgets/color_picker_sheet.dart';
-import 'widgets/app_icon_sheet.dart';
 import 'widgets/color_style_row.dart';
 import 'widgets/custom_theme_sheet.dart';
 import 'widgets/discovery_source_order_sheet.dart';
@@ -51,7 +48,6 @@ class SettingsPage extends ConsumerWidget {
     final webDavState = ref.watch(webDavSyncControllerProvider);
     final dynamicColor = ref.watch(dynamicColorStatusProvider);
     final equalizer = ref.watch(equalizerProvider);
-    final appIcon = supportsCustomAppIcons ? ref.watch(appIconProvider) : null;
     final versionLabel = ref.watch(appVersionLabelProvider);
     final baseTheme = Theme.of(context);
     final scheme = baseTheme.colorScheme;
@@ -514,18 +510,6 @@ class SettingsPage extends ConsumerWidget {
                               trailing: Icons.chevron_right,
                               onTap: () => _customizeTheme(context, ref),
                             ),
-                            if (supportsCustomAppIcons)
-                              SettingsAction(
-                                icon: Icons.apps_rounded,
-                                title: '应用图标',
-                                subtitle: appIcon?.isLoading == true
-                                    ? '正在读取或更新图标'
-                                    : appIcon?.hasError == true
-                                    ? '读取失败 · 点击重试'
-                                    : '${appIcon?.valueOrNull?.label ?? '经典白'} · 6 款桌面图标可选',
-                                trailing: Icons.chevron_right,
-                                onTap: () => _chooseAppIcon(context, ref),
-                              ),
                             SettingsSwitchAction(
                               icon: Icons.auto_awesome_outlined,
                               title: '歌单详情动态配色',
@@ -1071,44 +1055,6 @@ class SettingsPage extends ConsumerWidget {
       '批量下载音质已设为 ${quality.label}',
       type: AppToastType.success,
     );
-  }
-
-  Future<void> _chooseAppIcon(BuildContext context, WidgetRef ref) async {
-    if (ref.read(appIconProvider).isLoading) return;
-    if (ref.read(appIconProvider).hasError) ref.invalidate(appIconProvider);
-    final toolbar = ref.read(shellToolbarVisibleProvider.notifier);
-    final wasToolbarVisible = ref.read(shellToolbarVisibleProvider);
-    toolbar.state = false;
-    try {
-      final current = await ref.read(appIconProvider.future);
-      if (!context.mounted) return;
-      final selected = await showAppIconSheet(context, current);
-      if (selected == null || selected == current || !context.mounted) return;
-      final changed = await ref.read(appIconProvider.notifier).select(selected);
-      if (!changed || !context.mounted) return;
-      showAppToast(
-        context,
-        '桌面图标已设为${selected.label}',
-        type: AppToastType.success,
-      );
-    } catch (error) {
-      // 把真实原因落到「日志」页：iOS 拒绝换图标的理由（supportsAlternateIcons
-      // 为 false、图标清单对不上、侧载重签丢了 PlugIns…）只有这里看得到，
-      // 提示语本身给不出信息量。
-      final detail = error is PlatformException
-          ? '${error.message ?? ''} ${error.details ?? ''}'.trim()
-          : '$error';
-      await AppLogger.write('app-icon', '切换失败: $detail');
-      if (context.mounted) {
-        showAppToast(
-          context,
-          '无法更换桌面图标，原因见「日志」页（app-icon）',
-          type: AppToastType.error,
-        );
-      }
-    } finally {
-      if (toolbar.mounted) toolbar.state = wasToolbarVisible;
-    }
   }
 
   Future<void> _configurePlayerInterface(

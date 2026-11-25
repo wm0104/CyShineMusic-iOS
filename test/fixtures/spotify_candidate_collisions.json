@@ -1,0 +1,306 @@
+[
+  {
+    "title": "Reminder",
+    "provenance": "Wy public eapi search, reminder-import-summary.json, 2026-11-25; Spotify duration below is a synthetic test input, not a captured Spotify duration",
+    "spotifyDurationMs": 218880,
+    "expectedId": "wy_1924395476",
+    "candidates": [
+      {
+        "id": "wy_442869469",
+        "name": "Reminder",
+        "singer": "The Weeknd",
+        "source": "wy",
+        "interval": "03:38",
+        "meta": {
+          "songId": "442869469",
+          "albumName": "Starboy",
+          "durationMs": 218880
+        }
+      },
+      {
+        "id": "wy_2030154459",
+        "name": "Reminder",
+        "singer": "The Weeknd",
+        "source": "wy",
+        "interval": "03:38",
+        "meta": {
+          "songId": "2030154459",
+          "albumName": "Starboy (Deluxe)",
+          "durationMs": 218879
+        }
+      },
+      {
+        "id": "wy_2030158027",
+        "name": "Reminder (Remix)",
+        "singer": "The Weeknd、A$AP Rocky、Young Thug",
+        "source": "wy",
+        "interval": "03:41",
+        "meta": {
+          "songId": "2030158027",
+          "albumName": "Starboy (Deluxe)",
+          "durationMs": 221968
+        }
+      },
+      {
+        "id": "wy_2030154537",
+        "name": "Reminder (Remix)",
+        "singer": "The Weeknd、A$AP Rocky、Young Thug",
+        "source": "wy",
+        "interval": "03:41",
+        "meta": {
+          "songId": "2030154537",
+          "albumName": "Starboy (Deluxe)",
+          "durationMs": 221402
+        }
+      },
+      {
+        "id": "wy_2058139099",
+        "name": "One Of The Girls",
+        "singer": "The Weeknd、JENNIE、Lily-Rose Depp",
+        "source": "wy",
+        "interval": "04:04",
+        "meta": {
+          "songId": "2058139099",
+          "albumName": "The Idol Episode 4 (Music from the HBO Original Series)",
+          "durationMs": 244684
+        }
+      },
+      {
+        "id": "wy_2030158097",
+        "name": "Reminder",
+        "singer": "The Weeknd",
+        "source": "wy",
+        "interval": "03:38",
+        "meta": {
+          "songId": "2030158097",
+          "albumName": "Starboy (Deluxe)",
+          "durationMs": 218879
+        }
+      },
+      {
+        "id": "wy_2052348113",
+        "name": "Popular (Music from the HBO Original Series)",
+        "singer": "The Weeknd、Playboi Carti、Madonna",
+        "source": "wy",
+        "interval": "03:35",
+        "meta": {
+          "songId": "2052348113",
+          "albumName": "Popular (Music from the HBO Original Series)",
+          "durationMs": 215466
+        }
+      },
+      {
+        "id": "wy_493705842",
+        "name": "Reminder (Remix)",
+        "singer": "The Weeknd、A$AP Rocky、Young Thug",
+        "source": "wy",
+        "interval": "03:41",
+        "meta": {
+          "songId": "493705842",
+          "albumName": "Reminder (Remix)",
+          "durationMs": 221968
+        }
+      },
+      {
+        "id": "wy_2611717614",
+        "name": "The Weeknd-reminder - the weeknd (speed up + tiktok version)（kira remix）",
+        "singer": "kira",
+        "source": "wy",
+        "interval": "02:48",
+        "meta": {
+          "songId": "2611717614",
+          "albumName": "one",
+          "durationMs": 168948
+        }
+      },
+      {
+        "id": "wy_1924395476",
+        "name": "Reminder",
+        "singer": "The Weeknd",
+        "source": "wy",
+        "interval": "03:38",
+        "meta": {
+          "songId": "1924395476",
+          "albumName": "Starboy",
+          "durationMs": 218880
+        }
+      },
+      {
+        "id": "wy_2647773463",
+        "name": "Reminder (Originally Performed by The Weeknd ) [Karaoke No Guide Melody Version]",
+        "singer": "EdKara",
+        "source": "wy",
+        "interval": "03:51",
+        "meta": {
+          "songId": "2647773463",
+          "albumName": "Reminder (Originally Performed by The Weeknd ) [Karaoke No Guide Melody Version]",
+          "durationMs": 231038
+        }
+      },
+      {
+        "id": "wy_442867526",
+        "name": "Die For You",
+        "singer": "The Weeknd",
+        "source": "wy",
+        "interval": "04:20",
+        "meta": {
+          "songId": "442867526",
+          "albumName": "Starboy",
+          "durationMs": 260253
+        }
+      }
+    ]
+  },
+  {
+    "title": "The Hills",
+    "provenance": "Wy public eapi search, hills-import-summary.json, 2026-11-25; Spotify duration below is a synthetic test input, not a captured Spotify duration",
+    "spotifyDurationMs": 242253,
+    "expectedId": "wy_34077704",
+    "candidates": [
+      {
+        "id": "wy_32337668",
+        "name": "The Hills",
+        "singer": "The Weeknd",
+        "source": "wy",
+        "interval": "04:02",
+        "meta": {
+          "songId": "32337668",
+          "albumName": "The Hills",
+          "durationMs": 242280
+        }
+      },
+      {
+        "id": "wy_1818006927",
+        "name": "The Hills",
+        "singer": "The Weeknd",
+        "source": "wy",
+        "interval": "04:02",
+        "meta": {
+          "songId": "1818006927",
+          "albumName": "The Highlights",
+          "durationMs": 242290
+        }
+      },
+      {
+        "id": "wy_2027161323",
+        "name": "The Hills (Live)",
+        "singer": "The Weeknd",
+        "source": "wy",
+        "interval": "03:05",
+        "meta": {
+          "songId": "2027161323",
+          "albumName": "After Hours (Live At SoFi Stadium)",
+          "durationMs": 185361
+        }
+      },
+      {
+        "id": "wy_35345148",
+        "name": "The Hills  (Remix)",
+        "singer": "The Weeknd、Nicki Minaj",
+        "source": "wy",
+        "interval": "04:02",
+        "meta": {
+          "songId": "35345148",
+          "albumName": "The Hills Remixes",
+          "durationMs": 242509
+        }
+      },
+      {
+        "id": "wy_2028723246",
+        "name": "The Hills (Live)",
+        "singer": "The Weeknd",
+        "source": "wy",
+        "interval": "03:05",
+        "meta": {
+          "songId": "2028723246",
+          "albumName": "Live At SoFi Stadium",
+          "durationMs": 185361
+        }
+      },
+      {
+        "id": "wy_34077704",
+        "name": "The Hills",
+        "singer": "The Weeknd",
+        "source": "wy",
+        "interval": "04:02",
+        "meta": {
+          "songId": "34077704",
+          "albumName": "Beauty Behind The Madness",
+          "durationMs": 242253
+        }
+      },
+      {
+        "id": "wy_33678764",
+        "name": "The Hills",
+        "singer": "The Weeknd",
+        "source": "wy",
+        "interval": "03:54",
+        "meta": {
+          "songId": "33678764",
+          "albumName": "New Music This Week",
+          "durationMs": 234266
+        }
+      },
+      {
+        "id": "wy_429482331",
+        "name": "The Hills (The Moral Gray Remix)",
+        "singer": "The Moral Gray、The Weeknd",
+        "source": "wy",
+        "interval": "03:05",
+        "meta": {
+          "songId": "429482331",
+          "albumName": "The Hills (The Moral Gray Remix)",
+          "durationMs": 185681
+        }
+      },
+      {
+        "id": "wy_36492263",
+        "name": "The Hills (RL Grime Remix)",
+        "singer": "The Weeknd",
+        "source": "wy",
+        "interval": "04:31",
+        "meta": {
+          "songId": "36492263",
+          "albumName": "The Hills (RL Grime Remix)",
+          "durationMs": 271066
+        }
+      },
+      {
+        "id": "wy_2125192162",
+        "name": "The Hills",
+        "singer": "The Weeknd",
+        "source": "wy",
+        "interval": "04:02",
+        "meta": {
+          "songId": "2125192162",
+          "albumName": "The Highlights (Deluxe)",
+          "durationMs": 242290
+        }
+      },
+      {
+        "id": "wy_483690585",
+        "name": "The Hills (Foxen Remix)",
+        "singer": "Foxen、The Weeknd",
+        "source": "wy",
+        "interval": "04:14",
+        "meta": {
+          "songId": "483690585",
+          "albumName": "The Hills (Foxen Remix)",
+          "durationMs": 254929
+        }
+      },
+      {
+        "id": "wy_425137222",
+        "name": "The Hills (Dimitri Vegas & Like Mike Remix)",
+        "singer": "Dimitri Vegas & Like Mike、The Weeknd",
+        "source": "wy",
+        "interval": "05:56",
+        "meta": {
+          "songId": "425137222",
+          "albumName": "The Hills (Dimitri Vegas & Like Mike Remix)",
+          "durationMs": 356167
+        }
+      }
+    ]
+  }
+]

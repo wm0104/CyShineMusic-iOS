@@ -12,6 +12,7 @@ import '../models/music_url.dart';
 import '../sdk/internal/builders.dart';
 import '../services/app_logger.dart';
 import 'music_source_models.dart';
+import 'music_source_playback_policy.dart';
 import 'music_source_updates.dart';
 
 class MusicSourceRuntimeException implements Exception {
@@ -113,6 +114,7 @@ class MusicSourceRuntime {
             'version': record.version,
             'sourceKey': record.runtimeKey,
             'script': script,
+            'playbackPolicyScript': musicSourcePlaybackPolicyScript,
           })
           .timeout(const Duration(seconds: 12));
       if (result == null) {

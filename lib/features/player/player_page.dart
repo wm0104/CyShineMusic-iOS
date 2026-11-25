@@ -1,11 +1,16 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/api/music_api.dart';
+import '../../core/ui/app_toast.dart';
 import '../../core/ui/car_display_layout.dart';
 import '../../core/storage/settings_store.dart';
 import '../../theme/app_motion.dart';
 import '../shell/player_transition.dart';
 import 'player_controller.dart';
+import 'player_artist_resolver.dart';
 import 'widgets/album_cluster.dart';
 import 'widgets/immersive_background.dart';
 import 'widgets/lyrics_panel.dart';
@@ -43,6 +48,37 @@ class PlayerPage extends ConsumerStatefulWidget {
 }
 
 class _PlayerPageState extends ConsumerState<PlayerPage> {
+  bool _openingArtist = false;
+
+  Future<void> _openArtist() async {
+    if (_openingArtist || !widget.active) return;
+    final track = ref.read(playerControllerProvider).track;
+    if (track == null || !hasPlayerArtistName(track.artist)) {
+      showAppToast(context, '这首歌曲没有可用的歌手信息', type: AppToastType.warning);
+      return;
+    }
+    setState(() => _openingArtist = true);
+    try {
+      final request = PlayerArtistRequest(trackId: track.id, title: track.title,
+        artist: track.artist,
+        music: ref.read(playerControllerProvider.notifier).currentMusic);
+      final result = await resolvePlayerArtists(request, api: ref.read(musicApiProvider));
+      if (!mounted || !widget.active || ref.read(playerControllerProvider).track?.id != request.trackId) return;
+      ref.read(playerArtistSelectionProvider.notifier).state = PlayerArtistSelection(
+        request, result, returnLocation: widget.returnLocation);
+      final single = result.singleArtist;
+      final destination = single == null ? '/discover/track-artists'
+          : '/discover/artists/${single.source.code}/${Uri.encodeComponent(single.id)}?from=player';
+      widget.onDismissRequested(destination);
+    } catch (_) {
+      if (mounted && widget.active) {
+        showAppToast(context, '暂时无法读取歌手信息，请稍后再试', type: AppToastType.warning);
+      }
+    } finally {
+      if (mounted) setState(() => _openingArtist = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     // Watch only what decides the page skeleton. `position` ticks every few
@@ -95,6 +131,8 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                   children: [
                     TopChromeRow(
                       onOpenSongs: () => widget.onDismissRequested('/songs'),
+                      onOpenArtist: () => unawaited(_openArtist()),
+                      openingArtist: _openingArtist,
                     ),
                     Expanded(
                       child: showEmpty

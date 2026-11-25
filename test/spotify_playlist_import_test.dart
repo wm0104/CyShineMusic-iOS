@@ -1,9 +1,11 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:cy_shine_music/core/models/download_capabilities.dart';
 import 'package:cy_shine_music/core/models/enums.dart';
 import 'package:cy_shine_music/core/models/music_info.dart';
 import 'package:cy_shine_music/core/music_sources/music_source_controller.dart';
+import 'package:cy_shine_music/core/services/app_logger.dart';
 import 'package:cy_shine_music/core/storage/settings_store.dart';
 import 'package:cy_shine_music/core/ui/expressive_download_button.dart';
 import 'package:cy_shine_music/features/downloads/download_progress.dart';
@@ -90,6 +92,171 @@ SpotifyPlaylistImporter _importer(
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('real Wy collisions match stably with exact duration and release groups', () async {
+    final fixtures = jsonDecode(
+      File('test/fixtures/spotify_candidate_collisions.json').readAsStringSync(),
+    ) as List;
+    for (final fixture in fixtures) {
+      final candidates = [
+        for (final row in fixture['candidates']) MusicInfo.fromJson(
+          Map<String, dynamic>.from(row as Map),
+        ),
+      ];
+      for (final ordered in [candidates, candidates.reversed.toList()]) {
+        final preview = await _importer(
+          [{..._track(fixture['title'] as String, artist: 'The Weeknd'),
+            'duration': fixture['spotifyDurationMs']}],
+          search: (_, _) async => ordered,
+        ).read(_link);
+        expect(preview.tracks.single.musicInfo?.id, fixture['expectedId']);
+      }
+      // The source durations are real; these Spotify-side durations are test inputs.
+      if (fixture['title'] == 'The Hills') {
+        final ambiguous = await _importer(
+          [{..._track('The Hills', artist: 'The Weeknd'), 'duration': 242290}],
+          search: (_, _) async => candidates,
+        ).read(_link);
+        // Highlights vs Highlights (Deluxe): no Spotify album proof to choose.
+        expect(ambiguous.matched, 0);
+      }
+    }
+  });
+
+  test('only exact duplicate releases collapse, not second-only or different albums', () async {
+    final base = _candidate('Song A');
+    Future<int> matches(List<MusicInfo> candidates) async => (await _importer(
+      [_track('Song A')], search: (_, _) async => candidates,
+    ).read(_link)).matched;
+    MusicInfo copy(String id, {int? ms, String album = 'Match album'}) =>
+        MusicInfo.fromJson({...base.toJson(), 'id': id, 'meta': {
+          ...base.meta.raw, 'albumName': album, if (ms != null) 'durationMs': ms,
+        }});
+    expect(await matches([base]), 1); // Legacy interval remains supported.
+    expect(await matches([base, copy('other')]), 0);
+    expect(await matches([copy('a', ms: 200123), copy('b', ms: 200123)]), 1);
+    expect(await matches([copy('a', ms: 200123), copy('b', ms: 200123, album: 'Other recording')]), 0);
+    expect(await matches([copy('a', ms: 200122), copy('b', ms: 200124)]), 0);
+    expect(await matches([copy('a', ms: 0)]), 1);
+  });
+
+  test('rejects recording tags, artist mismatch and duration outside four seconds', () async {
+    final bad = [
+      for (final tag in ['Live', 'Remix', 'Clean', 'Instrumental', 'Cover', 'Sped Up'])
+        _candidate('Song A ($tag)'),
+      _candidate('Song A', singer: 'Different singer'),
+      _candidate('Song A', interval: '03:25'),
+      MusicInfo.fromJson({..._candidate('Song A').toJson(), 'meta': {
+        'songId': '1', 'albumName': 'Concert (Live)', 'durationMs': 200123,
+      }}),
+    ];
+    for (final candidate in bad) {
+      final preview = await _importer([_track('Song A')],
+        search: (_, _) async => [candidate]).read(_link);
+      expect(preview.matched, 0, reason: candidate.toJson().toString());
+    }
+  });
+
+  test('title-only retry is bounded to empty combined results', () async {
+    final queries = <String>[];
+    final preview = await _importer([_track('Song A')], search: (query, _) async {
+      queries.add(query);
+      return query == 'Song A' ? [_candidate('Song A')] : [];
+    }).read(_link);
+    expect(queries, ['Song A Singer', 'Song A']);
+    expect(preview.matched, 1);
+    queries.clear();
+    await _importer([_track('Song A')], search: (query, _) async {
+      queries.add(query);
+      return [_candidate('Song A', singer: 'Other')];
+    }).read(_link);
+    expect(queries, ['Song A Singer']);
+  });
+
+  test('first import defaults to wy and explicitly selected QQ never queries wy', () async {
+    final requests = <MusicSource>[];
+    final importer = SpotifyPlaylistImporter(
+      loadPage: (uri) async => (body: uri.path.startsWith('/embed/')
+        ? _embed([_track('Song A')]) : '', redirect: null),
+      enabledPlatforms: () async => [MusicSource.tx, MusicSource.wy],
+      search: (_, source) async {
+        requests.add(source);
+        return [_candidate('Song A', source: source)];
+      },
+    );
+    expect((await importer.read(_link)).tracks.single.source, MusicSource.wy);
+    expect(requests, [MusicSource.wy]);
+    requests.clear();
+    expect((await importer.read(_link, source: MusicSource.tx)).tracks.single.source, MusicSource.tx);
+    expect(requests, [MusicSource.tx]);
+  });
+
+  test('bounded retries retain three workers, duplicate rows and once-per-row progress', () async {
+    var active = 0;
+    var peak = 0;
+    var requests = 0;
+    final progress = <int>[];
+    final preview = await _importer(
+      List.generate(4, (_) => _track('Song A')),
+      search: (_, _) async {
+        requests++;
+        active++;
+        if (active > peak) peak = active;
+        await Future<void>.delayed(Duration.zero);
+        active--;
+        return [];
+      },
+    ).read(_link, onProgress: (done, total) => progress.add(done));
+    expect(peak, 3);
+    expect(requests, 8);
+    expect(preview.tracks, hasLength(4));
+    expect(preview.tracks.map((track) => track.identityKey).toSet(), hasLength(4));
+    expect(progress, [0, 1, 2, 3, 4]);
+  });
+
+  test('selected platform failure logs safely without fallback', () async {
+    final requests = <MusicSource>[];
+    final progress = <int>[];
+    final before = AppLogger.recentMemoryLines.length;
+    final importer = SpotifyPlaylistImporter(
+      loadPage: (uri) async => (
+        body: uri.path.startsWith('/embed/')
+            ? _embed([_track('Song A')]) : '',
+        redirect: null,
+      ),
+      enabledPlatforms: () async => [MusicSource.tx, MusicSource.wy],
+      search: (query, source) async {
+        requests.add(source);
+        if (source == MusicSource.tx) {
+          throw Exception('https://private.example/?token=private-test-token');
+        }
+        return [_candidate('Song A')];
+      },
+    );
+    await expectLater(importer.read(_link, source: MusicSource.tx,
+      onProgress: (done, total) => progress.add(done)), throwsStateError);
+    expect(requests, [MusicSource.tx]);
+    expect(progress, [0]);
+    final logs = AppLogger.recentMemoryLines.skip(before).join('\n');
+    expect(logs, contains('tx search failed'));
+    expect(logs, isNot(contains('private-test-token')));
+    expect(logs, isNot(contains('private.example')));
+  });
+
+  test('cancellation stops retry and does not advance completed progress', () async {
+    var cancelled = false;
+    final progress = <int>[];
+    var requests = 0;
+    final preview = await _importer([_track('Song A')], search: (_, _) async {
+      requests++;
+      cancelled = true;
+      return [];
+    }).read(_link, cancelled: () => cancelled,
+      onProgress: (done, total) => progress.add(done));
+    expect(requests, 1);
+    expect(progress, [0]);
+    expect(preview.matched, 0);
+  });
   test(
     'recognizes share text, locale, Spotify URI and HTTPS short links',
     () async {
@@ -125,7 +292,7 @@ void main() {
             redirect: null,
           );
         },
-        enabledPlatforms: () async => [],
+        enabledPlatforms: () async => [MusicSource.wy],
         search: (_, _) async => [],
       );
       final result = await importer.read(
@@ -236,7 +403,7 @@ void main() {
           total: total,
           search: (query, source) async {
             expect(query, isNot(contains('Interview')));
-            throw Exception('source unavailable');
+            return [];
           },
         ).read(_link);
         expect(result.complete, isFalse);
@@ -249,7 +416,7 @@ void main() {
   );
 
   test(
-    'tries the next enabled source when equally close recordings are ambiguous',
+    'ambiguous selected recordings stay unmatched without trying other sources',
     () async {
       final visited = <MusicSource>[];
       final importer = SpotifyPlaylistImporter(
@@ -273,9 +440,14 @@ void main() {
           ];
         },
       );
-      final preview = await importer.read(_link);
+      final preview = await importer.read(_link, source: MusicSource.tx);
+      expect(visited, [MusicSource.tx]);
+      expect(preview.matched, 0);
+      final rematched = await importer.rematchUnmatched(
+        preview.tracks, source: MusicSource.wy,
+      );
       expect(visited, [MusicSource.tx, MusicSource.wy]);
-      expect(preview.tracks.single.musicInfo!.source, MusicSource.wy);
+      expect(rematched.single.musicInfo!.source, MusicSource.wy);
     },
   );
 
@@ -332,6 +504,10 @@ void main() {
   testWidgets(
     'preview uses the import track row and only enables matched songs',
     (tester) async {
+      tester.view.physicalSize = const Size(980, 1600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
       final candidate = _candidate('SONG A', singer: 'Singer、Guest');
       final container = ProviderContainer(
         overrides: [

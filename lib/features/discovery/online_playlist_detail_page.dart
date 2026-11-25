@@ -39,12 +39,14 @@ class OnlinePlaylistDetailPage extends ConsumerStatefulWidget {
     required this.playlistId,
     this.kind = OnlineCollectionKind.playlist,
     this.summary,
+    this.onBack,
   });
 
   final MusicSource source;
   final String playlistId;
   final OnlineCollectionKind kind;
   final PlaylistSummary? summary;
+  final VoidCallback? onBack;
 
   @override
   ConsumerState<OnlinePlaylistDetailPage> createState() =>
@@ -180,6 +182,7 @@ class _OnlinePlaylistDetailPageState
         playlistId: widget.playlistId,
         kind: widget.kind,
         carPadModeEnabled: carPadModeEnabled,
+        onBack: widget.onBack,
       ),
       error: (error, _) => _DetailError(
         summary: _summary,
@@ -189,6 +192,7 @@ class _OnlinePlaylistDetailPageState
         message: _friendlyError(error),
         onRetry: () => _invalidateDetail(retry: true),
         carPadModeEnabled: carPadModeEnabled,
+        onBack: widget.onBack,
       ),
       data: (playlist) => _buildPlaylist(
         context,
@@ -363,6 +367,7 @@ class _OnlinePlaylistDetailPageState
                 ? PlaylistWideBody(
                     topBar: ImmersivePlaylistTopBar(
                       title: _detailLabel,
+                      leading: _detailBackButton(widget.onBack, onImage: !wide),
                       onImage: false,
                     ),
                     infoPane: PlaylistWideInfoPane(
@@ -417,6 +422,7 @@ class _OnlinePlaylistDetailPageState
                               ),
                               topBar: ImmersivePlaylistTopBar(
                                 title: _detailLabel,
+                                leading: _detailBackButton(widget.onBack, onImage: true),
                               ),
                             ),
                           ),
@@ -619,6 +625,7 @@ class _DetailLoading extends StatelessWidget {
     required this.playlistId,
     required this.kind,
     required this.carPadModeEnabled,
+    this.onBack,
   });
 
   final PlaylistSummary? summary;
@@ -626,6 +633,7 @@ class _DetailLoading extends StatelessWidget {
   final String playlistId;
   final OnlineCollectionKind kind;
   final bool carPadModeEnabled;
+  final VoidCallback? onBack;
 
   @override
   Widget build(BuildContext context) {
@@ -675,6 +683,7 @@ class _DetailLoading extends StatelessWidget {
                 ? PlaylistWideBody(
                     topBar: ImmersivePlaylistTopBar(
                       title: detailLabel,
+                      leading: _detailBackButton(onBack, onImage: !wide),
                       onImage: false,
                     ),
                     infoPane: PlaylistWideInfoPane(
@@ -724,7 +733,10 @@ class _DetailLoading extends StatelessWidget {
                             playlistId,
                             kind: kind,
                           ),
-                          topBar: ImmersivePlaylistTopBar(title: detailLabel),
+                          topBar: ImmersivePlaylistTopBar(
+                            title: detailLabel,
+                            leading: _detailBackButton(onBack, onImage: true),
+                          ),
                         ),
                       ),
                       SliverToBoxAdapter(
@@ -766,6 +778,7 @@ class _DetailError extends StatelessWidget {
     required this.message,
     required this.onRetry,
     required this.carPadModeEnabled,
+    this.onBack,
   });
 
   final PlaylistSummary? summary;
@@ -775,6 +788,7 @@ class _DetailError extends StatelessWidget {
   final String message;
   final VoidCallback onRetry;
   final bool carPadModeEnabled;
+  final VoidCallback? onBack;
 
   @override
   Widget build(BuildContext context) {
@@ -832,6 +846,7 @@ class _DetailError extends StatelessWidget {
                 ? PlaylistWideBody(
                     topBar: ImmersivePlaylistTopBar(
                       title: detailLabel,
+                      leading: _detailBackButton(onBack, onImage: !wide),
                       onImage: false,
                     ),
                     infoPane: PlaylistWideInfoPane(
@@ -860,7 +875,10 @@ class _DetailError extends StatelessWidget {
                             playlistId,
                             kind: kind,
                           ),
-                          topBar: ImmersivePlaylistTopBar(title: detailLabel),
+                          topBar: ImmersivePlaylistTopBar(
+                            title: detailLabel,
+                            leading: _detailBackButton(onBack, onImage: true),
+                          ),
                         ),
                       ),
                       SliverToBoxAdapter(
@@ -1226,3 +1244,9 @@ extension _FirstOrNull<T> on Iterable<T> {
     return iterator.moveNext() ? iterator.current : null;
   }
 }
+
+Widget? _detailBackButton(VoidCallback? onBack, {required bool onImage}) =>
+    onBack == null ? null : ImmersiveTopIconButton(
+      tooltip: '返回', icon: Icons.arrow_back_rounded,
+      onImage: onImage, onPressed: onBack,
+    );
