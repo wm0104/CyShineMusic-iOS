@@ -60,17 +60,21 @@ class _PlayerInterfaceSettingsSheet extends ConsumerWidget {
                 icon: Icons.lyrics_outlined,
                 title: '歌词界面设置',
                 subtitle:
-                    '粗细 ${settings.lyricFontWeight.round()} · 大小 ${settings.lyricFontSize.round()}',
+                    '粗细 ${settings.lyricFontWeight.round()} '
+                    '· 原歌词 ${settings.lyricFontSize.round()} '
+                    '· 译文 ${settings.lyricTranslationFontSize.round()}',
                 trailing: Icons.chevron_right_rounded,
                 onTap: () async {
                   final selected = await showLyricSettingsSheet(
                     context,
                     weight: settings.lyricFontWeight,
                     size: settings.lyricFontSize,
+                    translationSize: settings.lyricTranslationFontSize,
                   );
                   await notifier.setLyricFontStyle(
                     weight: selected.weight,
                     size: selected.size,
+                    translationSize: selected.translationSize,
                   );
                 },
               ),

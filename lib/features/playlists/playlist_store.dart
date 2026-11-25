@@ -115,35 +115,57 @@ class LocalPlaylistNotifier extends Notifier<List<LocalPlaylist>> {
       throw const PlaylistStoreException('歌单歌曲已变化，请重新补配');
     }
     var changed = 0;
-    final tracks = [
-      for (final track in current.tracks) (() {
-        final original = before[track.identityKey]!;
-        final replacement = after[track.identityKey]!;
-        if (!track.isUnmatchedSpotify ||
-            !original.isUnmatchedSpotify ||
-            replacement.isUnmatchedSpotify ||
-            replacement.musicInfo == null ||
-            jsonEncode(track.spotify?.toJson()) != jsonEncode(original.spotify?.toJson()) ||
-            jsonEncode(original.spotify?.toJson()) != jsonEncode(replacement.spotify?.toJson())) {
-          return track;
-        }
+    final tracks = <PlaylistTrack>[];
+    for (final track in current.tracks) {
+      final snapshot = before[track.identityKey]!;
+      final replacement = after[track.identityKey]!;
+      final updated = track.spotifyMatchReplacement(
+        snapshot: snapshot,
+        replacement: replacement,
+      );
+      if (updated != null) {
         changed++;
-        return track.copyWith(
-          musicId: replacement.musicId,
-          sourceCode: replacement.sourceCode,
-          qualityCode: replacement.qualityCode,
-          albumName: replacement.albumName,
-          picUrl: replacement.picUrl,
-          musicJson: replacement.musicJson,
-        );
-      })(),
-    ];
+      } else if (replacement.spotifyMatchIsManual &&
+          !snapshot.hasSameSpotifyMatch(replacement) &&
+          !track.hasSameSpotifyMatch(replacement)) {
+        throw const PlaylistStoreException('歌曲匹配已更新，请重新打开歌单后再补配');
+      }
+      tracks.add(updated ?? track);
+    }
     if (changed == 0) return 0;
     final next = [...state];
     next[index] = current.copyWith(tracks: tracks, updatedAt: DateTime.now());
     state = List<LocalPlaylist>.unmodifiable(next);
     await _persist();
     return changed;
+  }
+
+  Future<bool> setSpotifyTrackMatch(
+    String playlistId, {
+    required PlaylistTrack expected,
+    required MusicInfo music,
+  }) async {
+    final index = state.indexWhere((playlist) => playlist.id == playlistId);
+    if (index < 0 || expected.spotify == null) return false;
+    final current = state[index];
+    if (current.originSourceCode != 'spotify') return false;
+    final trackIndex = current.tracks.indexWhere(
+      (track) => track.identityKey == expected.identityKey,
+    );
+    if (trackIndex < 0) return false;
+    final track = current.tracks[trackIndex];
+    final replacement = expected.withSpotifyMatch(music);
+    final updated = track.spotifyMatchReplacement(
+      snapshot: expected,
+      replacement: replacement,
+    );
+    if (updated == null) return track.hasSameSpotifyMatch(replacement);
+    final tracks = [...current.tracks]..[trackIndex] = updated;
+    final next = [...state];
+    next[index] = current.copyWith(tracks: tracks, updatedAt: DateTime.now());
+    state = List<LocalPlaylist>.unmodifiable(next);
+    await _persist();
+    return true;
   }
 
   Future<bool> delete(String id) async {
@@ -207,12 +229,44 @@ class LocalPlaylistNotifier extends Notifier<List<LocalPlaylist>> {
     );
   }
 
-  Future<LocalPlaylist> importSpotify(SpotifyPlaylistPreview preview) {
+  Future<LocalPlaylist> importSpotify(
+    SpotifyPlaylistPreview preview, {
+    Map<String, PlaylistTrack> manualMatchSnapshots = const {},
+  }) async {
+    final current = state
+        .where(
+          (playlist) =>
+              playlist.originPlaylistId == preview.id &&
+              playlist.originSourceCode == 'spotify',
+        )
+        .firstOrNull;
+    final manualMatches = {
+      for (final track in current?.tracks ?? <PlaylistTrack>[])
+        if (track.spotifyMatchIsManual) track.identityKey: track,
+    };
+    final tracks = preview.tracks.map((incoming) {
+      final saved = manualMatches[incoming.identityKey];
+      if (saved == null ||
+          !incoming.spotifyMatchIsManual ||
+          saved.hasSameSpotifyMatch(incoming)) {
+        return incoming;
+      }
+      final snapshot = manualMatchSnapshots[incoming.identityKey];
+      if (snapshot != null) {
+        if (saved.hasSameSpotifyMatch(snapshot)) return incoming;
+        throw const PlaylistStoreException('歌曲匹配已更新，请重新解析后再保存');
+      }
+      return saved.copyWith(
+        name: incoming.name,
+        singer: incoming.singer,
+        spotify: incoming.spotify,
+      );
+    }).toList();
     return _importOnlineTracks(
       originId: preview.id,
       sourceCode: 'spotify',
       name: preview.name,
-      importedTracks: preview.tracks,
+      importedTracks: tracks,
       creator: preview.creator,
       coverUrl: preview.coverUrl,
       originTrackCount: preview.total,
@@ -421,6 +475,7 @@ class LocalPlaylistNotifier extends Notifier<List<LocalPlaylist>> {
     required String playlistId,
     required String trackId,
     required String picUrl,
+    MusicInfo? expectedMusic,
   }) async {
     final url = picUrl.trim();
     if (url.isEmpty) return false;
@@ -437,6 +492,11 @@ class LocalPlaylistNotifier extends Notifier<List<LocalPlaylist>> {
     if (trackIndex < 0) return false;
 
     final current = playlist.tracks[trackIndex];
+    if (expectedMusic != null &&
+        (expectedMusic.id != current.musicId ||
+            expectedMusic.source != current.source)) {
+      return false;
+    }
     final musicJson = _musicJsonWithPicUrl(current.musicJson, url);
     final currentMetaPicUrl = _musicJsonPicUrl(current.musicJson);
     if (current.picUrl == url &&

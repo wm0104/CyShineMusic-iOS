@@ -4,14 +4,17 @@ import 'package:flutter/services.dart';
 import '../../../core/storage/settings_store.dart';
 import '../../player/widgets/player_palette.dart';
 
-Future<({double weight, double size})> showLyricSettingsSheet(
+Future<({double weight, double size, double translationSize})>
+showLyricSettingsSheet(
   BuildContext context, {
   required double weight,
   required double size,
+  required double translationSize,
 }) async {
   var selected = (
     weight: normalizeLyricFontWeight(weight),
     size: normalizeLyricFontSize(size),
+    translationSize: normalizeLyricTranslationFontSize(translationSize),
   );
   await showModalBottomSheet<void>(
     context: context,
@@ -21,6 +24,7 @@ Future<({double weight, double size})> showLyricSettingsSheet(
     builder: (_) => _LyricSettingsSheet(
       weight: selected.weight,
       size: selected.size,
+      translationSize: selected.translationSize,
       onChanged: (value) => selected = value,
     ),
   );
@@ -31,12 +35,15 @@ class _LyricSettingsSheet extends StatefulWidget {
   const _LyricSettingsSheet({
     required this.weight,
     required this.size,
+    required this.translationSize,
     required this.onChanged,
   });
 
   final double weight;
   final double size;
-  final ValueChanged<({double weight, double size})> onChanged;
+  final double translationSize;
+  final ValueChanged<({double weight, double size, double translationSize})>
+  onChanged;
 
   @override
   State<_LyricSettingsSheet> createState() => _LyricSettingsSheetState();
@@ -45,27 +52,44 @@ class _LyricSettingsSheet extends StatefulWidget {
 class _LyricSettingsSheetState extends State<_LyricSettingsSheet> {
   late double _weight = widget.weight;
   late double _size = widget.size;
+  late double _translationSize = widget.translationSize;
   final _weightKey = GlobalKey<_StyleControlState>();
   final _sizeKey = GlobalKey<_StyleControlState>();
+  final _translationSizeKey = GlobalKey<_StyleControlState>();
 
-  void _update({double? weight, double? size}) {
+  void _update({double? weight, double? size, double? translationSize}) {
     if (!mounted) return;
     setState(() {
       _weight = normalizeLyricFontWeight(weight ?? _weight);
       _size = normalizeLyricFontSize(size ?? _size);
+      _translationSize = normalizeLyricTranslationFontSize(
+        translationSize ?? _translationSize,
+      );
     });
-    widget.onChanged((weight: _weight, size: _size));
+    widget.onChanged((
+      weight: _weight,
+      size: _size,
+      translationSize: _translationSize,
+    ));
   }
 
   void _reset() {
     _weightKey.currentState?.setValue(kLyricFontWeightDefault);
     _sizeKey.currentState?.setValue(kLyricFontSizeDefault);
-    _update(weight: kLyricFontWeightDefault, size: kLyricFontSizeDefault);
+    _translationSizeKey.currentState?.setValue(
+      kLyricTranslationFontSizeDefault,
+    );
+    _update(
+      weight: kLyricFontWeightDefault,
+      size: kLyricFontSizeDefault,
+      translationSize: kLyricTranslationFontSizeDefault,
+    );
   }
 
   void _finish() {
     _weightKey.currentState?.commitInput();
     _sizeKey.currentState?.commitInput();
+    _translationSizeKey.currentState?.commitInput();
     FocusScope.of(context).unfocus();
     Navigator.of(context).pop();
   }
@@ -76,7 +100,9 @@ class _LyricSettingsSheetState extends State<_LyricSettingsSheet> {
     final scheme = theme.colorScheme;
     final media = MediaQuery.of(context);
     final isDefault =
-        _weight == kLyricFontWeightDefault && _size == kLyricFontSizeDefault;
+        _weight == kLyricFontWeightDefault &&
+        _size == kLyricFontSizeDefault &&
+        _translationSize == kLyricTranslationFontSizeDefault;
     return AnimatedPadding(
       duration: const Duration(milliseconds: 160),
       curve: Curves.easeOutCubic,
@@ -127,7 +153,11 @@ class _LyricSettingsSheetState extends State<_LyricSettingsSheet> {
                         ),
                       ),
                       const SizedBox(height: 18),
-                      _LyricPreview(weight: _weight, size: _size),
+                      _LyricPreview(
+                        weight: _weight,
+                        size: _size,
+                        translationSize: _translationSize,
+                      ),
                       const SizedBox(height: 18),
                       Container(
                         padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
@@ -164,12 +194,32 @@ class _LyricSettingsSheetState extends State<_LyricSettingsSheet> {
                             _StyleControl(
                               key: _sizeKey,
                               icon: Icons.format_size_rounded,
-                              label: '字体大小',
+                              label: '原歌词大小',
                               value: _size,
                               min: kLyricFontSizeMin,
                               max: kLyricFontSizeMax,
                               step: 1,
                               onChanged: (value) => _update(size: value),
+                            ),
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              child: Divider(
+                                height: 1,
+                                color: scheme.outlineVariant.withValues(
+                                  alpha: 0.4,
+                                ),
+                              ),
+                            ),
+                            _StyleControl(
+                              key: _translationSizeKey,
+                              icon: Icons.format_size_rounded,
+                              label: '译文大小',
+                              value: _translationSize,
+                              min: kLyricTranslationFontSizeMin,
+                              max: kLyricTranslationFontSizeMax,
+                              step: 1,
+                              onChanged: (value) =>
+                                  _update(translationSize: value),
                             ),
                           ],
                         ),
@@ -212,10 +262,15 @@ class _LyricSettingsSheetState extends State<_LyricSettingsSheet> {
 }
 
 class _LyricPreview extends StatelessWidget {
-  const _LyricPreview({required this.weight, required this.size});
+  const _LyricPreview({
+    required this.weight,
+    required this.size,
+    required this.translationSize,
+  });
 
   final double weight;
   final double size;
+  final double translationSize;
 
   @override
   Widget build(BuildContext context) {
@@ -227,7 +282,7 @@ class _LyricPreview extends StatelessWidget {
     );
     final height =
         scaler.scale(kLyricFontSizeMax) * 1.2 +
-        scaler.scale(14 * kLyricFontSizeMax / kLyricFontSizeDefault) * 1.3 +
+        scaler.scale(kLyricTranslationFontSizeMax) * 1.3 +
         scaler.scale(12) +
         56;
     return Container(
@@ -269,7 +324,7 @@ class _LyricPreview extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '听见热爱',
+                  'Hear what you love',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
@@ -283,13 +338,13 @@ class _LyricPreview extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Every word matters',
+                  '听见热爱',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     color: scheme.onSurface.withValues(alpha: 0.38),
                     fontFamilyFallback: kPlayerFontFallback,
-                    fontSize: 14 * size / kLyricFontSizeDefault,
+                    fontSize: translationSize,
                     fontWeight: FontWeight(secondaryWeight.round()),
                     fontVariations: [FontVariation.weight(secondaryWeight)],
                     height: 1.3,
@@ -416,7 +471,8 @@ class _StyleControlState extends State<_StyleControl> {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    widget.step == 100 ? '100–1000 · 每次 100' : '16–56 · 每次 1',
+                    '${widget.min.round()}–${widget.max.round()} '
+                    '· 每次 ${widget.step.round()}',
                     style: theme.bodySmall?.copyWith(
                       color: scheme.onSurfaceVariant,
                     ),

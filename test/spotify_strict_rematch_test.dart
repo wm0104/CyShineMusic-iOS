@@ -211,6 +211,88 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  test('manual Spotify matches survive reload, reimport and automatic patch', () async {
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
+    final container = ProviderContainer(overrides: [sharedPreferencesProvider.overrideWithValue(prefs)]);
+    addTearDown(container.dispose);
+    final store = container.read(localPlaylistsProvider.notifier);
+    final originals = [row(0, matched: true).copyWith(localPath: '/old/version'), row(1)];
+    final saved = await store.importSpotify(preview(originals));
+    final order = originals.reversed.map((track) => track.identityKey).toList();
+    await store.setCustomTrackOrder(saved.id, order);
+
+    final picked = candidate(MusicSource.tx, title: 'Manual');
+    expect(await store.setSpotifyTrackMatch(saved.id, expected: originals.first, music: picked), isTrue);
+    expect(await store.setSpotifyTrackMatch(saved.id, expected: originals.first, music: candidate(MusicSource.kg)), isFalse);
+    final reimported = await store.importSpotify(preview(originals));
+    expect(reimported.tracks.first.musicInfo?.id, picked.id);
+    expect(reimported.tracks.first.localPath, isNull);
+    expect(
+      await store.updateTrackCover(
+        playlistId: saved.id,
+        trackId: originals.first.identityKey,
+        picUrl: 'https://example.test/old-version.jpg',
+        expectedMusic: originals.first.musicInfo,
+      ),
+      isFalse,
+    );
+    await store.patchSpotifyMatches(saved.id, snapshot: originals, replacements: [
+      originals.first,
+      PlaylistTrack.fromSpotify(originals.last.spotify!, candidate(MusicSource.wy)),
+    ]);
+
+    final reloaded = ProviderContainer(overrides: [sharedPreferencesProvider.overrideWithValue(prefs)]);
+    addTearDown(reloaded.dispose);
+    final current = reloaded.read(localPlaylistsProvider).single;
+    expect(current.tracks.first.spotifyMatchIsManual, isTrue);
+    expect(current.tracks.first.musicInfo?.id, picked.id);
+    expect(current.tracks.last.source, MusicSource.wy);
+    expect(current.tracks.map((track) => track.identityKey), originals.map((track) => track.identityKey));
+    expect(current.customTrackOrder, order);
+  });
+
+  test('a malformed stored Spotify match remains eligible for a retry', () async {
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
+    final container = ProviderContainer(overrides: [
+      sharedPreferencesProvider.overrideWithValue(prefs),
+    ]);
+    addTearDown(container.dispose);
+    final store = container.read(localPlaylistsProvider.notifier);
+    final bad = row(0, matched: true).copyWith(musicJson: {'id': 'wrong-id'});
+    expect(bad.isUnmatchedSpotify, isTrue);
+    await store.importSpotify(preview([bad]));
+    final refreshed = await store.importSpotify(preview([row(0)]));
+    expect(refreshed.tracks.single.isUnmatchedSpotify, isTrue);
+    expect(refreshed.tracks.single.musicJson, isNull);
+  });
+
+  test('only an explicit edit against the saved manual version can replace it', () async {
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
+    final container = ProviderContainer(overrides: [sharedPreferencesProvider.overrideWithValue(prefs)]);
+    addTearDown(container.dispose);
+    final store = container.read(localPlaylistsProvider.notifier);
+    final original = row(0).withSpotifyMatch(candidate(MusicSource.tx));
+    final saved = await store.importSpotify(preview([original]));
+    expect(await store.setSpotifyTrackMatch(saved.id, expected: original, music: candidate(MusicSource.kg)), isTrue);
+    final draft = original.withSpotifyMatch(candidate(MusicSource.wy));
+    await expectLater(
+      store.importSpotify(preview([draft]), manualMatchSnapshots: {
+        original.identityKey: original,
+      }),
+      throwsA(isA<PlaylistStoreException>()),
+    );
+    final staleSave = await store.importSpotify(preview([draft]));
+    final current = staleSave.tracks.single;
+    expect(current.source, MusicSource.kg);
+    final explicitSave = await store.importSpotify(preview([draft]), manualMatchSnapshots: {
+      current.identityKey: current,
+    });
+    expect(explicitSave.tracks.single.source, MusicSource.wy);
+  });
+
   test('saved patch rejects concurrent deletion and never restores deleted entries', () async {
     SharedPreferences.setMockInitialValues({});
     final prefs = await SharedPreferences.getInstance();

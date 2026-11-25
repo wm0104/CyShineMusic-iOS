@@ -126,6 +126,7 @@ class SpotifyPlaylistImporter {
   Future<SpotifyPlaylistPreview> read(
     Uri link, {
     MusicSource source = MusicSource.wy,
+    Iterable<PlaylistTrack> Function(String id)? existingMatches,
     void Function(int done, int total)? onProgress,
     bool Function()? cancelled,
   }) async {
@@ -144,10 +145,23 @@ class SpotifyPlaylistImporter {
     );
     final entity = _parseEntity(embed.body, id);
     final total = await totalRequest;
-    final originals = _parseTracks(entity['trackList']);
+    final originals = _parseTracks(entity['trackList']).map(
+      (track) => PlaylistTrack.fromSpotify(track, null),
+    );
+    final savedMatches = <String, PlaylistTrack>{};
+    for (final saved in existingMatches?.call(id) ?? const <PlaylistTrack>[]) {
+      if (saved.spotify != null &&
+          !saved.isUnmatchedSpotify &&
+          (saved.spotifyMatchIsManual || saved.source == source)) {
+        savedMatches[saved.identityKey] = saved;
+      }
+    }
     SpotifyMatchIssues? matchIssues;
     final results = await rematchUnmatched(
-      [for (final track in originals) PlaylistTrack.fromSpotify(track, null)],
+      [
+        for (final track in originals)
+          savedMatches[track.identityKey]?.mergePreferLocal(track) ?? track,
+      ],
       source: source,
       onProgress: onProgress,
       cancelled: cancelled,
@@ -177,16 +191,17 @@ class SpotifyPlaylistImporter {
   }) async {
     final snapshot = List<PlaylistTrack>.unmodifiable(tracks);
     if (cancelled?.call() == true) return snapshot;
+    final indices = [
+      for (var i = 0; i < snapshot.length; i++)
+        if (snapshot[i].isUnmatchedSpotify) i,
+    ];
+    if (indices.isEmpty) return snapshot;
     final platforms = await enabledPlatforms();
     if (cancelled?.call() == true) return snapshot;
     if (source == MusicSource.all || !platforms.contains(source)) {
       throw StateError('${source.label}未启用或不可用');
     }
     final results = [...snapshot];
-    final indices = [
-      for (var i = 0; i < snapshot.length; i++)
-        if (snapshot[i].isUnmatchedSpotify) i,
-    ];
     var nextIndex = 0;
     var done = 0;
     var completedSearches = 0;
@@ -208,18 +223,23 @@ class SpotifyPlaylistImporter {
         final track = original.spotify!;
         if (canSearch(index)) {
           try {
-            var candidates = await search('${track.title} ${track.artist}', source);
+            final candidates = await search(
+              '${track.title} ${track.artist}',
+              source,
+            );
             if (cancelled?.call() == true) return;
-            // Only empty searches get one bounded retry, never ambiguous hits.
-            if (candidates.isEmpty) {
+            final initial = _rankMatches(track, candidates, source);
+            var match = initial.match;
+            // A different query can omit part of an already-known tie.
+            if (match == null && !initial.ambiguous) {
               if (rateLimited) {
                 unfinished++;
                 return;
               }
-              candidates = await search(track.title, source);
+              final titleResults = await search(track.title, source);
               if (cancelled?.call() == true) return;
+              match = _rankMatches(track, titleResults, source).match;
             }
-            final match = _bestMatch(track, candidates, source);
             if (match != null) {
               results[index] = PlaylistTrack.fromSpotify(track, match).copyWith(
                 localPath: original.localPath,
@@ -456,27 +476,28 @@ bool _sameRelease(MusicInfo a, MusicInfo b) {
       _knownExplicit(a) == _knownExplicit(b);
 }
 
-MusicInfo? _bestMatch(
+({MusicInfo? match, bool ambiguous}) _rankMatches(
   SpotifyTrackMetadata track,
   List<MusicInfo> candidates,
   MusicSource source,
 ) {
   final title = _normalize(track.title);
   final artist = _normalize(track.artist);
-  if (title.isEmpty || artist.isEmpty) return null;
+  if (title.isEmpty || artist.isEmpty) return (match: null, ambiguous: false);
+  final artists = _artists(track.artist);
+  final recordingTags = _recordingTags(track.title);
   final best = <MusicInfo>[];
   int? smallestDifference;
   for (final candidate in candidates) {
     if (candidate.source != source ||
-        candidate.id.isEmpty ||
+        candidate.id.trim().isEmpty ||
         _normalize(candidate.name) != title ||
-        _recordingTags(candidate.name, candidate.albumName) !=
-            _recordingTags(track.title) ||
+        _recordingTags(candidate.name, candidate.albumName) != recordingTags ||
         (track.explicit != null &&
             _knownExplicit(candidate) != null &&
             track.explicit != _knownExplicit(candidate)) ||
         (_normalize(candidate.singer) != artist &&
-            _artists(candidate.singer) != _artists(track.artist))) {
+            _artists(candidate.singer) != artists)) {
       continue;
     }
     final ms = _durationMs(candidate);
@@ -497,16 +518,16 @@ MusicInfo? _bestMatch(
       best.add(candidate);
     }
   }
-  if (best.isEmpty) return null;
+  if (best.isEmpty) return (match: null, ambiguous: false);
   final first = best.first;
   for (final candidate in best.skip(1)) {
     if (candidate.id != first.id && !_sameRelease(first, candidate)) {
-      return null;
+      return (match: null, ambiguous: true);
     }
   }
   // ID orders equivalent entries only; it says nothing about audio quality.
   best.sort((a, b) => a.id.compareTo(b.id));
-  return best.first;
+  return (match: best.first, ambiguous: false);
 }
 
 final spotifyPlaylistImporterProvider = Provider<SpotifyPlaylistImporter>((

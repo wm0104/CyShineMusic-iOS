@@ -26,6 +26,7 @@ class PlaylistTrackTile extends ConsumerWidget {
     required this.onPlay,
     required this.onDownload,
     required this.onRemove,
+    this.onMatch,
     this.reordering = false,
     this.reorderEnabled = true,
   });
@@ -39,6 +40,7 @@ class PlaylistTrackTile extends ConsumerWidget {
   final bool selected;
   final VoidCallback onToggleSelected;
   final VoidCallback onPlay;
+  final VoidCallback? onMatch;
   final VoidCallback? onDownload;
   final VoidCallback onRemove;
   final bool reordering;
@@ -56,6 +58,10 @@ class PlaylistTrackTile extends ConsumerWidget {
             ),
           );
     final isLocal = item.localEntry != null;
+    final tapToMatch =
+        onMatch != null && item.track.isUnmatchedSpotify && !batchMode && !reordering;
+    final canReplace = onMatch != null && !item.track.isUnmatchedSpotify;
+    final tapHint = tapToMatch ? '轻触匹配音源' : '轻触播放';
     final selectionEnabled = !batchSubmitting && task?.isBusy != true;
     final reduceMotion = MediaQuery.disableAnimationsOf(context);
     final shortDuration = reduceMotion ? Duration.zero : AppMotion.short;
@@ -87,11 +93,15 @@ class PlaylistTrackTile extends ConsumerWidget {
         child: Semantics(
           button: !reordering,
           selected: batchMode && selected,
-          hint: reordering ? '拖动右侧手柄整理顺序' : (batchMode ? '轻触选择歌曲' : '轻触播放'),
+          hint: reordering
+              ? '拖动右侧手柄整理顺序'
+              : batchMode
+              ? '轻触选择歌曲'
+              : tapHint,
           child: InkWell(
             onTap: reordering ? null : batchMode
                 ? (selectionEnabled ? onToggleSelected : null)
-                : onPlay,
+                : (tapToMatch ? onMatch : onPlay),
             child: Padding(
               padding: const EdgeInsets.fromLTRB(4, 8, 2, 8),
               child: Row(
@@ -157,6 +167,7 @@ class PlaylistTrackTile extends ConsumerWidget {
                                 ? '未知歌手'
                                 : item.track.singer,
                             isLocal ? '本地' : item.track.sourceLabel,
+                            if (tapToMatch) '轻触匹配',
                           ].join(' · '),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
@@ -260,8 +271,16 @@ class PlaylistTrackTile extends ConsumerWidget {
       enabled: !batchMode && !reordering,
       endActionPane: ActionPane(
         motion: const BehindMotion(),
-        extentRatio: 0.24,
+        extentRatio: canReplace ? 0.48 : 0.24,
         children: [
+          if (canReplace)
+            SlidableAction(
+              onPressed: (_) => onMatch!(),
+              backgroundColor: scheme.secondaryContainer,
+              foregroundColor: scheme.onSecondaryContainer,
+              icon: Icons.search_rounded,
+              label: '更换匹配',
+            ),
           SlidableAction(
             key: const ValueKey('playlist-remove-action'),
             onPressed: (_) => onRemove(),

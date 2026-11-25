@@ -7,6 +7,8 @@ import 'package:cy_shine_music/core/api/dio_factory.dart';
 import 'package:cy_shine_music/core/models/enums.dart';
 import 'package:cy_shine_music/core/models/music_info.dart';
 import 'package:cy_shine_music/core/storage/settings_store.dart';
+import 'package:cy_shine_music/features/player/lyric_parser.dart';
+import 'package:cy_shine_music/features/player/widgets/lyric_line.dart';
 import 'package:cy_shine_music/features/search/widgets/source_filter_chips.dart';
 import 'package:cy_shine_music/features/settings/settings_page.dart';
 import 'package:cy_shine_music/features/settings/widgets/settings_action.dart';
@@ -65,6 +67,155 @@ void main() {
     expect(restored.useDynamicColor, isTrue);
     expect(restored.onlinePlaybackQuality, OnlinePlaybackQuality.lossless);
   });
+
+  test(
+    'translation size migrates and persists independently of originals',
+    () async {
+      SharedPreferences.setMockInitialValues({'lyric_font_size': 48.0});
+      final prefs = await SharedPreferences.getInstance();
+      final container = _settingsContainer(prefs);
+      final notifier = container.read(settingsProvider.notifier);
+      expect(container.read(settingsProvider).lyricTranslationFontSize, 21);
+
+      final legacyAppearance = notifier.exportAppearanceForSync()
+        ..remove('lyricTranslationFontSize');
+      await notifier.applyAppearanceFromSync({
+        ...legacyAppearance,
+        'lyricFontSize': 40,
+      });
+      container.dispose();
+
+      final restored = _settingsContainer(prefs);
+      final restoredNotifier = restored.read(settingsProvider.notifier);
+      expect(restored.read(settingsProvider).lyricFontSize, 40);
+      expect(restored.read(settingsProvider).lyricTranslationFontSize, 21);
+
+      await restoredNotifier.applyAppearanceFromSync({
+        ...legacyAppearance,
+        'lyricTranslationFontSize': 30,
+      });
+      await restoredNotifier.setLyricFontStyle(weight: 500, size: 32);
+      expect(
+        restoredNotifier.exportAppearanceForSync()['lyricTranslationFontSize'],
+        30,
+      );
+      restored.dispose();
+
+      final reloaded = _settingsContainer(prefs);
+      addTearDown(reloaded.dispose);
+      expect(reloaded.read(settingsProvider).lyricFontSize, 32);
+      expect(reloaded.read(settingsProvider).lyricTranslationFontSize, 30);
+    },
+  );
+
+  testWidgets('lyric settings preview and save both sizes independently', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(430, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final prefs = await SharedPreferences.getInstance();
+    final container = _settingsContainer(prefs);
+    addTearDown(container.dispose);
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp(theme: AppTheme.light(), home: const SettingsPage()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final playerRow = find.byKey(const ValueKey('player-interface-setting'));
+    await tester.ensureVisible(playerRow);
+      await tester.pumpAndSettle();
+    await tester.tap(playerRow);
+    await tester.pumpAndSettle();
+    final lyricRow = find.byKey(const ValueKey('lyric-interface-setting'));
+    await tester.tap(lyricRow);
+    await tester.pumpAndSettle();
+
+    double? previewSize(String sample) =>
+        tester.widget<Text>(find.text(sample)).style?.fontSize;
+    expect(previewSize('Hear what you love'), 32);
+    expect(previewSize('听见热爱'), 14);
+
+    final originalIncrease = find.byTooltip('增大原歌词大小');
+    await tester.ensureVisible(originalIncrease);
+      await tester.pumpAndSettle();
+    await tester.tap(originalIncrease);
+    await tester.pumpAndSettle();
+    expect(previewSize('Hear what you love'), 33);
+    expect(previewSize('听见热爱'), 14);
+
+    final translationField = find.byType(TextField).last;
+    await tester.ensureVisible(translationField);
+      await tester.pumpAndSettle();
+    await tester.enterText(translationField, '27');
+    await tester.pumpAndSettle();
+    expect(previewSize('Hear what you love'), 33);
+    expect(previewSize('听见热爱'), 27);
+
+    await tester.tap(find.widgetWithText(FilledButton, '完成').last);
+    await tester.pumpAndSettle();
+    expect(container.read(settingsProvider).lyricFontSize, 33);
+    expect(container.read(settingsProvider).lyricTranslationFontSize, 27);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'full lyrics render translation size independently of original and roman',
+    (tester) async {
+      final prefs = await SharedPreferences.getInstance();
+      final container = _settingsContainer(prefs);
+      addTearDown(container.dispose);
+      final blurSuppressed = ValueNotifier(false);
+      final anchorMs = ValueNotifier(0);
+      final playing = ValueNotifier(false);
+      final buffering = ValueNotifier(false);
+      addTearDown(blurSuppressed.dispose);
+      addTearDown(anchorMs.dispose);
+      addTearDown(playing.dispose);
+      addTearDown(buffering.dispose);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(
+            home: Scaffold(
+              body: LyricLineTile(
+                line: const KaraokeLyricLine(
+                  startMs: 0,
+                  endMs: 1000,
+                  text: 'Original lyric',
+                  translation: '中文译文',
+                  roman: 'zhong wen yi wen',
+                ),
+                active: true,
+                selected: false,
+                distance: 0,
+                blurSuppressed: blurSuppressed,
+                showTranslation: true,
+                anchorMs: anchorMs,
+                playing: playing,
+                buffering: buffering,
+                onSelect: () {},
+                onSeek: () {},
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      double? renderedSize(String lyric) =>
+          DefaultTextStyle.of(tester.element(find.text(lyric))).style.fontSize;
+      await container
+          .read(settingsProvider.notifier)
+          .setLyricFontStyle(weight: 500, size: 32, translationSize: 30);
+      await tester.pumpAndSettle();
+      expect(renderedSize('Original lyric'), 32);
+      expect(renderedSize('中文译文'), 30);
+      expect(renderedSize('zhong wen yi wen'), 12);
+    },
+  );
 
   test('color style persists and defaults to soft', () async {
     final prefs = await SharedPreferences.getInstance();

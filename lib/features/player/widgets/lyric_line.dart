@@ -164,8 +164,11 @@ class LyricLineTile extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final font = ref.watch(
       settingsProvider.select(
-        (settings) =>
-            (weight: settings.lyricFontWeight, size: settings.lyricFontSize),
+        (settings) => (
+          weight: settings.lyricFontWeight,
+          size: settings.lyricFontSize,
+          translationSize: settings.lyricTranslationFontSize,
+        ),
       ),
     );
     final blurDisabled = ref.watch(
@@ -193,7 +196,7 @@ class LyricLineTile extends ConsumerWidget {
     final subStyle = TextStyle(
       color: ink.withValues(alpha: active && !line.hasWordTiming ? 1 : 0.3),
       fontFamilyFallback: kPlayerFontFallback,
-      fontSize: 14 * sizeScale,
+      fontSize: font.translationSize,
       fontWeight: FontWeight(secondaryWeight.round()),
       fontVariations: [FontVariation.weight(secondaryWeight)],
       height: 1.30,

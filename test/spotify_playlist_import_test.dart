@@ -188,7 +188,7 @@ void main() {
     }
   });
 
-  test('title-only retry is bounded to empty combined results', () async {
+  test('title-only retry handles empty combined results', () async {
     final queries = <String>[];
     final preview = await _importer([_track('Song A')], search: (query, _) async {
       queries.add(query);
@@ -196,12 +196,94 @@ void main() {
     }).read(_link);
     expect(queries, ['Song A Singer', 'Song A']);
     expect(preview.matched, 1);
-    queries.clear();
-    await _importer([_track('Song A')], search: (query, _) async {
-      queries.add(query);
-      return [_candidate('Song A', singer: 'Other')];
-    }).read(_link);
-    expect(queries, ['Song A Singer']);
+  });
+
+  test('title-only retry finds a match after unrelated combined results', () async {
+    final queries = <(String, MusicSource)>[];
+    final preview = await _importer(
+      [_track('Song A')],
+      search: (query, source) async {
+        queries.add((query, source));
+        if (query == 'Song A Singer') {
+          return [
+            _candidate('Song A', singer: 'Other'),
+            _candidate('Song A (Live)'),
+            _candidate('Song A', source: MusicSource.tx),
+          ];
+        }
+        return [_candidate('Song A')];
+      },
+    ).read(_link);
+    expect(preview.matched, 1);
+    expect(queries, [
+      ('Song A Singer', MusicSource.wy),
+      ('Song A', MusicSource.wy),
+    ]);
+  });
+
+  test('reimport keeps manual and same-platform matches when changing source', () async {
+    const sharedUri = 'spotify:track:shared';
+    const otherSourceUri = 'spotify:track:other-source';
+    const sameSourceUri = 'spotify:track:same-source';
+    SpotifyTrackMetadata previous(String uri, {int occurrence = 0}) =>
+        SpotifyTrackMetadata(
+          uri: uri,
+          title: 'Previous release title',
+          artist: 'Previous artist spelling',
+          occurrence: occurrence,
+        );
+    final manual = PlaylistTrack.fromSpotify(
+      previous(sharedUri),
+      _candidate('Previous release title', source: MusicSource.tx),
+      manual: true,
+    ).copyWith(localPath: 'saved.flac');
+    final invalid = PlaylistTrack.fromSpotify(
+      previous(sharedUri, occurrence: 1),
+      null,
+    ).copyWith(musicJson: {'id': 1});
+    final otherSource = PlaylistTrack.fromSpotify(
+      previous(otherSourceUri),
+      _candidate('Other source song', source: MusicSource.tx),
+    );
+    final sameSource = PlaylistTrack.fromSpotify(
+      previous(sameSourceUri),
+      _candidate('Same source song'),
+    );
+    final queried = <(String, MusicSource)>[];
+    final preview = await _importer(
+      [
+        _track('Current title', uri: sharedUri),
+        _track('Current title', uri: sharedUri),
+        _track('Other source song', uri: otherSourceUri),
+        _track('Same source song', uri: sameSourceUri),
+      ],
+      search: (query, source) async {
+        queried.add((query, source));
+        return [
+          _candidate('Current title', source: source),
+          _candidate('Other source song', source: source),
+        ];
+      },
+    ).read(_link, existingMatches: (id) {
+      expect(id, _id);
+      return [manual, invalid, otherSource, sameSource];
+    });
+
+    expect(queried, [
+      ('Current title Singer', MusicSource.wy),
+      ('Other source song Singer', MusicSource.wy),
+    ]);
+    expect(preview.tracks.map((row) => row.source), [
+      MusicSource.tx,
+      MusicSource.wy,
+      MusicSource.wy,
+      MusicSource.wy,
+    ]);
+    expect(preview.tracks.first.spotifyMatchIsManual, isTrue);
+    expect(preview.tracks.first.localPath, 'saved.flac');
+    expect(preview.tracks.first.spotify?.title, 'Current title');
+    expect(preview.tracks.first.spotify?.artist, 'Singer');
+    expect(preview.tracks.map((row) => row.spotify?.occurrence), [0, 1, 0, 0]);
   });
 
   test('first import defaults to wy and explicitly selected QQ never queries wy', () async {
@@ -618,15 +700,18 @@ void main() {
   );
 
   testWidgets(
-    'preview uses the import track row and only enables matched songs',
+    'preview uses the import track row for playback and manual matching',
     (tester) async {
       tester.view.physicalSize = const Size(980, 1600);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
       final candidate = _candidate('SONG A', singer: 'Singer、Guest');
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
       final container = ProviderContainer(
         overrides: [
+          sharedPreferencesProvider.overrideWithValue(prefs),
           spotifyPlaylistImporterProvider.overrideWithValue(
             _importer(
               [
@@ -694,17 +779,18 @@ void main() {
       );
       expect(tester.widget<TrackResultRow>(matched).onPlay, isNotNull);
       expect(tester.widget<TrackResultRow>(missing).onPlay, isNull);
+      expect(tester.widget<TrackResultRow>(missing).onSelect, isNotNull);
       expect(
         find.descendant(
           of: missing,
-          matching: find.byType(ExpressiveDownloadButton),
+          matching: find.byTooltip('选择音质下载'),
         ),
         findsNothing,
       );
 
       final download = find.descendant(
         of: matched,
-        matching: find.byType(ExpressiveDownloadButton),
+        matching: find.byKey(ValueKey('search-result-download-${candidate.id}')),
       );
       await tester.ensureVisible(download);
       await tester.tap(download);

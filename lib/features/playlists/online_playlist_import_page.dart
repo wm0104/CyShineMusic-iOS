@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -12,6 +10,7 @@ import '../../core/models/playlist_info.dart';
 import '../../core/sdk/internal/format.dart';
 import '../../core/ui/app_toast.dart';
 import '../../core/ui/car_display_layout.dart';
+import '../../core/ui/expressive_download_button.dart';
 import '../shell/shell_bottom_area.dart';
 import '../downloads/download_progress.dart';
 import '../music_sources/music_source_action_guard.dart';
@@ -22,6 +21,7 @@ import 'playlist_cover_image.dart';
 import 'playlist_store.dart';
 import 'playlist_models.dart';
 import 'spotify_playlist_import.dart';
+import 'spotify_track_match_picker.dart';
 import '../shell/shell_navigation.dart';
 
 class _OnlinePlaylistDraft {
@@ -30,12 +30,16 @@ class _OnlinePlaylistDraft {
     this.source = MusicSource.all,
     this.playlist,
     this.spotify,
+    this.previousSpotify,
+    this.manualMatchSnapshots = const {},
   });
 
   final String input;
   final MusicSource source;
   final PlaylistInfo? playlist;
   final SpotifyPlaylistPreview? spotify;
+  final SpotifyPlaylistPreview? previousSpotify;
+  final Map<String, PlaylistTrack> manualMatchSnapshots;
 }
 
 final _onlinePlaylistDraftProvider = StateProvider<_OnlinePlaylistDraft>(
@@ -60,6 +64,8 @@ class _OnlinePlaylistImportPageState
   bool _loadedSaved = false;
   PlaylistInfo? _playlist;
   SpotifyPlaylistPreview? _spotify;
+  SpotifyPlaylistPreview? _previousSpotify;
+  Map<String, PlaylistTrack> _manualMatchSnapshots = const {};
   String? _progress;
   String? _error;
   bool _loading = false;
@@ -74,6 +80,8 @@ class _OnlinePlaylistImportPageState
     _source = draft.source;
     _playlist = draft.playlist;
     _spotify = draft.spotify;
+    _previousSpotify = draft.previousSpotify;
+    _manualMatchSnapshots = draft.manualMatchSnapshots;
   }
 
   @override
@@ -112,7 +120,7 @@ class _OnlinePlaylistImportPageState
 
   bool _requestActive(Object request) => mounted &&
       identical(_requestToken, request) &&
-      ModalRoute.of(context)?.isCurrent != false && TickerMode.of(context);
+      ModalRoute.of(context)?.isCurrent != false && TickerMode.valuesOf(context).enabled;
 
   void _cancelMatching() {
     _requestToken = null;
@@ -126,7 +134,7 @@ class _OnlinePlaylistImportPageState
       return;
     }
     var preview = current == null ? _spotify : _savedPreview(current);
-    if (preview == null || _loading) return;
+    if (preview == null || _loading || _saving) return;
     if (current != null && _rematchSnapshot != null && _spotify != null) {
       final baseline = {for (final track in _rematchSnapshot!) track.identityKey: track};
       final ids = current.tracks.map((track) => track.identityKey).toSet();
@@ -135,14 +143,14 @@ class _OnlinePlaylistImportPageState
         return;
       }
       final pending = {for (final track in _spotify!.tracks) track.identityKey: track};
-      final tracks = [for (final track in current.tracks) (() {
+      final tracks = current.tracks.map((track) {
         final match = pending[track.identityKey];
-        if (!track.isUnmatchedSpotify || match == null || match.isUnmatchedSpotify ||
-            jsonEncode(track.spotify?.toJson()) != jsonEncode(match.spotify?.toJson())) return track;
-        return track.copyWith(musicId: match.musicId, sourceCode: match.sourceCode,
-          qualityCode: match.qualityCode, albumName: match.albumName,
-          picUrl: match.picUrl, musicJson: match.musicJson);
-      })()];
+        if (match == null) return track;
+        return track.spotifyMatchReplacement(
+          snapshot: baseline[track.identityKey]!,
+          replacement: match,
+        ) ?? track;
+      }).toList();
       preview = SpotifyPlaylistPreview(id: preview.id, name: preview.name, tracks: tracks,
         total: preview.total, creator: preview.creator, coverUrl: preview.coverUrl);
     }
@@ -177,10 +185,46 @@ class _OnlinePlaylistImportPageState
       if (_savedPlaylistId == null) _rememberDraft();
       _showSpotifyMatchIssues(matchIssues);
     } catch (error) {
-      if (_requestActive(request)) showAppToast(context, describeDioError(error), type: AppToastType.error);
+      if (mounted && _requestActive(request)) {
+        showAppToast(context, describeDioError(error), type: AppToastType.error);
+      }
     } finally {
       if (mounted && identical(_requestToken, request)) setState(() => _loading = false);
     }
+  }
+
+  Future<void> _chooseMatch(int index) async {
+    final preview = _spotify;
+    if (preview == null || _loading || _saving) return;
+    final track = preview.tracks[index];
+    final selected = await pickSpotifyTrackMatch(
+      context,
+      track,
+      initialSource: track.isUnmatchedSpotify ? _matchSource : track.source,
+    );
+    if (selected == null || !mounted || !identical(preview, _spotify) ||
+        ModalRoute.of(context)?.isCurrent == false) {
+      return;
+    }
+    final tracks = [...preview.tracks]..[index] = track.withSpotifyMatch(selected);
+    setState(() {
+      if (_savedPlaylistId != null) {
+        _rematchSnapshot ??= preview.tracks;
+      } else if (!_manualMatchSnapshots.containsKey(track.identityKey)) {
+        _manualMatchSnapshots = {..._manualMatchSnapshots, track.identityKey: track};
+      }
+      _spotify = SpotifyPlaylistPreview(
+        id: preview.id,
+        name: preview.name,
+        tracks: tracks,
+        total: preview.total,
+        creator: preview.creator,
+        coverUrl: preview.coverUrl,
+        hasMatchingPlatforms: preview.hasMatchingPlatforms,
+        matchIssues: preview.matchIssues,
+      );
+    });
+    _rememberDraft();
   }
 
   @override
@@ -301,6 +345,19 @@ class _OnlinePlaylistImportPageState
                       ? track.musicInfo
                       : _playlist!.tracks[index];
                   final durationMs = track?.spotify?.durationMs;
+                  final onMatch = track?.spotify == null || _saving
+                      ? null
+                      : () => _chooseMatch(index);
+                  final matchAction = track?.spotify == null ? null : ExpressiveDownloadButton(
+                    key: ValueKey('spotify-match-${track!.identityKey}'),
+                    tooltip: track.isUnmatchedSpotify ? '手动匹配' : '更换匹配',
+                    onPressed: onMatch,
+                    isLoading: false,
+                    size: 36,
+                    tapTargetSize: 40,
+                    tonal: true,
+                    idleIcon: Icons.manage_search_rounded,
+                  );
                   return Center(
                     child: ConstrainedBox(
                       constraints: CarDisplayLayout.contentConstraints(
@@ -315,11 +372,15 @@ class _OnlinePlaylistImportPageState
                               interval: durationMs == null
                                   ? null
                                   : formatPlayTime(durationMs / 1000),
+                              onSelect: onMatch,
+                              selectionHint: '轻触匹配音源',
+                              actions: [?matchAction],
                             )
                           : _OnlineTrackTile(
                               music: music,
                               displayName: track?.name,
                               displaySinger: track?.singer,
+                              additionalAction: matchAction,
                               onDownload: () =>
                                   showQualityPickerSheet(context, music),
                               onPlay: () => _play(music),
@@ -336,6 +397,7 @@ class _OnlinePlaylistImportPageState
   }
 
   Future<void> _parse() async {
+    if (_loading || _saving) return;
     FocusManager.instance.primaryFocus?.unfocus();
     final input = _inputController.text.trim();
     if (input.isEmpty) {
@@ -347,7 +409,6 @@ class _OnlinePlaylistImportPageState
     setState(() {
       _loading = true;
       _playlist = null;
-      _spotify = null;
       _progress = null;
       _error = null;
     });
@@ -355,11 +416,14 @@ class _OnlinePlaylistImportPageState
     try {
       final link = spotifyShareLink(input);
       if (link != null) {
+        // Keep the current draft intact if this refresh fails or is cancelled.
+        final pendingEdits = Map.of(_manualMatchSnapshots);
         final spotify = await ref
             .read(spotifyPlaylistImporterProvider)
             .read(
               link,
               source: _matchSource,
+              existingMatches: (id) => _existingSpotifyMatches(id, pendingEdits),
               cancelled: () => !_requestActive(request),
               onProgress: (done, total) {
                 if (mounted && identical(_requestToken, request)) {
@@ -371,6 +435,7 @@ class _OnlinePlaylistImportPageState
         setState(() {
           _loading = false;
           _spotify = spotify;
+          _manualMatchSnapshots = pendingEdits;
         });
         _rememberDraft();
         _showSpotifyMatchIssues(spotify.matchIssues);
@@ -382,6 +447,7 @@ class _OnlinePlaylistImportPageState
       if (!_requestActive(request)) return;
       setState(() {
         _loading = false;
+        _spotify = null;
         _playlist = playlist;
       });
       _rememberDraft(playlist: playlist);
@@ -398,6 +464,37 @@ class _OnlinePlaylistImportPageState
       }
     }
   }
+
+  Iterable<PlaylistTrack> _existingSpotifyMatches(
+    String id,
+    Map<String, PlaylistTrack> pendingEdits,
+  ) sync* {
+    if (!mounted) return;
+    final saved = _savedSpotifyMatches(id);
+    final draft = _previousSpotify;
+    // The importer takes the last valid match for each original occurrence.
+    if (draft != null && draft.id == id) yield* draft.tracks;
+    yield* saved.values;
+    if (draft != null && draft.id == id) {
+      for (final track in draft.tracks) {
+        final snapshot = pendingEdits[track.identityKey];
+        if (!track.spotifyMatchIsManual || snapshot == null) continue;
+        final stored = saved[track.identityKey];
+        if (stored != null && stored.spotifyMatchIsManual &&
+            !stored.hasSameSpotifyMatch(snapshot)) {
+          pendingEdits.remove(track.identityKey);
+        } else {
+          yield track;
+        }
+      }
+    }
+  }
+
+  Map<String, PlaylistTrack> _savedSpotifyMatches(String id) => {
+    for (final playlist in ref.read(localPlaylistsProvider))
+      if (playlist.originSourceCode == 'spotify' && playlist.originPlaylistId == id)
+        for (final track in playlist.tracks) track.identityKey: track,
+  };
 
   void _showSpotifyMatchIssues(SpotifyMatchIssues? issues) {
     if (issues == null) return;
@@ -444,12 +541,17 @@ class _OnlinePlaylistImportPageState
           ),
         );
         if (!mounted) return;
-        if (accepted != true) return;
+        if (accepted != true ||
+            !identical(_spotify, spotify) ||
+            _loading ||
+            ModalRoute.of(context)?.isCurrent == false) {
+          return;
+        }
       }
       setState(() => _saving = true);
       final store = ref.read(localPlaylistsProvider.notifier);
       final local = spotify != null
-          ? await store.importSpotify(spotify)
+          ? await store.importSpotify(spotify, manualMatchSnapshots: _manualMatchSnapshots)
           : await store.importOnline(playlist!);
       if (!mounted) return;
       showAppToast(context, '歌单已保存到本地', type: AppToastType.success);
@@ -482,6 +584,8 @@ class _OnlinePlaylistImportPageState
     _inputController.clear();
     setState(() {
       _spotify = null;
+      _previousSpotify = null;
+      _manualMatchSnapshots = const {};
       _playlist = null;
       _error = null;
     });
@@ -502,6 +606,10 @@ class _OnlinePlaylistImportPageState
 
   void _rememberDraft({PlaylistInfo? playlist}) {
     if (_savedPlaylistId != null) return;
+    if (_spotify != null && _previousSpotify?.id != _spotify!.id) {
+      _manualMatchSnapshots = const {};
+    }
+    _previousSpotify = _spotify ?? _previousSpotify;
     ref
         .read(_onlinePlaylistDraftProvider.notifier)
         .state = _OnlinePlaylistDraft(
@@ -509,6 +617,8 @@ class _OnlinePlaylistImportPageState
       source: _source,
       playlist: playlist ?? _playlist,
       spotify: _spotify,
+      previousSpotify: _previousSpotify,
+      manualMatchSnapshots: _manualMatchSnapshots,
     );
   }
 }
@@ -850,6 +960,7 @@ class _OnlineTrackTile extends ConsumerWidget {
     required this.onPlay,
     this.displayName,
     this.displaySinger,
+    this.additionalAction,
   });
 
   final MusicInfo music;
@@ -857,6 +968,7 @@ class _OnlineTrackTile extends ConsumerWidget {
   final VoidCallback onPlay;
   final String? displayName;
   final String? displaySinger;
+  final Widget? additionalAction;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -869,6 +981,7 @@ class _OnlineTrackTile extends ConsumerWidget {
       music: music,
       displayName: displayName,
       displaySinger: displaySinger,
+      additionalAction: additionalAction,
       onDownload: onDownload,
       onPlay: onPlay,
       downloadTask: task,

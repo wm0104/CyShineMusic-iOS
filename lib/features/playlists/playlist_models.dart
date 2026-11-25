@@ -66,6 +66,7 @@ class PlaylistTrack {
     this.picUrl,
     this.musicJson,
     this.spotify,
+    this.spotifyMatchIsManual = false,
   });
 
   final String musicId;
@@ -79,7 +80,8 @@ class PlaylistTrack {
   final Map<String, dynamic>? musicJson;
 
   final SpotifyTrackMetadata? spotify;
-  bool get isUnmatchedSpotify => spotify != null && musicJson == null;
+  final bool spotifyMatchIsManual;
+  bool get isUnmatchedSpotify => spotify != null && musicInfo == null;
   String get sourceLabel => isUnmatchedSpotify ? '未匹配音源' : source.label;
 
   MusicSource get source => MusicSource.fromCode(sourceCode);
@@ -92,7 +94,15 @@ class PlaylistTrack {
     final json = musicJson;
     if (json == null) return null;
     try {
-      return MusicInfo.fromJson(json);
+      final music = MusicInfo.fromJson(json);
+      if (spotify != null &&
+          (music.id != musicId ||
+              music.id.trim().isEmpty ||
+              music.source == MusicSource.all ||
+              music.source != source)) {
+        return null;
+      }
+      return music;
     } catch (_) {
       return null;
     }
@@ -149,8 +159,9 @@ class PlaylistTrack {
 
   factory PlaylistTrack.fromSpotify(
     SpotifyTrackMetadata original,
-    MusicInfo? match,
-  ) {
+    MusicInfo? match, {
+    bool manual = false,
+  }) {
     return PlaylistTrack(
       musicId: match?.id ?? original.uri,
       name: original.title,
@@ -161,8 +172,43 @@ class PlaylistTrack {
       picUrl: _nonEmpty(match?.meta.picUrl),
       musicJson: match?.toJson(),
       spotify: original,
+      spotifyMatchIsManual: match != null && manual,
     );
   }
+
+  PlaylistTrack withSpotifyMatch(MusicInfo music) => mergePreferLocal(
+    PlaylistTrack.fromSpotify(spotify!, music, manual: true),
+  );
+
+  PlaylistTrack? spotifyMatchReplacement({
+    required PlaylistTrack snapshot,
+    required PlaylistTrack replacement,
+  }) {
+    final original = spotify;
+    final proposed = replacement.musicInfo;
+    if (original == null || proposed == null) return null;
+    final metadata = original.toJson();
+    if (!mapEquals(metadata, snapshot.spotify?.toJson()) ||
+        !mapEquals(metadata, replacement.spotify?.toJson())) {
+      return null;
+    }
+    if (!replacement.spotifyMatchIsManual) {
+      if (!isUnmatchedSpotify || !snapshot.isUnmatchedSpotify) return null;
+      return mergePreferLocal(replacement);
+    }
+    // An automatic match can finish while the picker is open. A newer manual
+    // choice, however, must survive an older picker or preview being saved.
+    if (spotifyMatchIsManual &&
+        (!hasSameSpotifyMatch(snapshot) || hasSameSpotifyMatch(replacement))) {
+      return null;
+    }
+    return withSpotifyMatch(proposed);
+  }
+
+  bool hasSameSpotifyMatch(PlaylistTrack other) =>
+      spotifyMatchIsManual == other.spotifyMatchIsManual &&
+      sourceCode == other.sourceCode &&
+      musicId == other.musicId;
 
   PlaylistTrack copyWith({
     String? musicId,
@@ -174,6 +220,7 @@ class PlaylistTrack {
     String? localPath,
     String? picUrl,
     Map<String, dynamic>? musicJson,
+    SpotifyTrackMetadata? spotify,
   }) {
     return PlaylistTrack(
       musicId: musicId ?? this.musicId,
@@ -185,26 +232,30 @@ class PlaylistTrack {
       localPath: localPath ?? this.localPath,
       picUrl: picUrl ?? this.picUrl,
       musicJson: musicJson ?? this.musicJson,
-      spotify: spotify,
+      spotify: spotify ?? this.spotify,
+      spotifyMatchIsManual: spotifyMatchIsManual,
     );
   }
 
   PlaylistTrack mergePreferLocal(PlaylistTrack incoming) {
     if (spotify != null && incoming.spotify != null) {
-      if (musicJson != null && incoming.isUnmatchedSpotify) {
-        return incoming.copyWith(
-          musicId: musicId,
-          sourceCode: sourceCode,
-          musicJson: musicJson,
-          picUrl: picUrl,
-          albumName: albumName,
-          localPath: localPath,
-          qualityCode: qualityCode,
+      if (!isUnmatchedSpotify &&
+          (incoming.isUnmatchedSpotify ||
+              (spotifyMatchIsManual && !incoming.spotifyMatchIsManual))) {
+        return copyWith(
+          name: incoming.name,
+          singer: incoming.singer,
+          spotify: incoming.spotify,
         );
       }
       if (musicId != incoming.musicId || sourceCode != incoming.sourceCode) {
         return incoming;
       }
+      return incoming.copyWith(
+        localPath: incoming.localPath ?? localPath,
+        picUrl: incoming.picUrl ?? picUrl,
+        qualityCode: !incoming.isLocal && isLocal ? qualityCode : null,
+      );
     }
     if (incoming.isLocal || !isLocal) return incoming;
     return incoming.copyWith(localPath: localPath);
@@ -220,6 +271,7 @@ class PlaylistTrack {
       qualityCode: qualityCode,
       picUrl: picUrl,
       spotify: spotify,
+      spotifyMatchIsManual: spotifyMatchIsManual,
       musicJson: musicJson == null
           ? null
           : Map<String, dynamic>.from(musicJson!),
@@ -286,6 +338,7 @@ class PlaylistTrack {
     if (picUrl != null) 'picUrl': picUrl,
     if (musicJson != null) 'musicInfo': musicJson,
     if (spotify != null) 'spotify': spotify!.toJson(),
+    if (spotifyMatchIsManual) 'spotifyMatchIsManual': true,
   };
 
   static PlaylistTrack? tryFromJson(Object? value) {
@@ -303,6 +356,7 @@ class PlaylistTrack {
       picUrl: _nonEmpty(_stringOrNull(json['picUrl'])),
       musicJson: _mapOrNull(json['musicInfo']),
       spotify: SpotifyTrackMetadata.tryFromJson(json['spotify']),
+      spotifyMatchIsManual: json['spotifyMatchIsManual'] == true,
     );
 
     if (track.name.trim().isEmpty && !track.isLocal) return null;

@@ -166,10 +166,17 @@ class PlaylistTrackCoverKey {
   bool operator ==(Object other) =>
       other is PlaylistTrackCoverKey &&
       other.playlistId == playlistId &&
-      other.track.identityKey == track.identityKey;
+      other.track.identityKey == track.identityKey &&
+      other.track.sourceCode == track.sourceCode &&
+      other.track.musicId == track.musicId;
 
   @override
-  int get hashCode => Object.hash(playlistId, track.identityKey);
+  int get hashCode => Object.hash(
+    playlistId,
+    track.identityKey,
+    track.sourceCode,
+    track.musicId,
+  );
 }
 
 final playlistCoverResolverProvider = Provider<PlaylistCoverResolver>((ref) {
@@ -191,6 +198,7 @@ final playlistTrackCoverProvider = FutureProvider.autoDispose
         playlistId: key.playlistId,
         trackId: key.track.identityKey,
         picUrl: resolved,
+        expectedMusic: music,
       );
       return resolved;
     });

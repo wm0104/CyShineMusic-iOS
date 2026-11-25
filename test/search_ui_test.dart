@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:material_symbols_icons/symbols.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:cy_shine_music/core/api/music_api.dart';
 import 'package:cy_shine_music/core/models/enums.dart';
 import 'package:cy_shine_music/core/models/music_info.dart';
 import 'package:cy_shine_music/core/models/search_response.dart';
@@ -13,7 +14,9 @@ import 'package:cy_shine_music/core/storage/settings_store.dart';
 import 'package:cy_shine_music/core/ui/app_toast.dart';
 import 'package:cy_shine_music/core/ui/expressive_download_button.dart';
 import 'package:cy_shine_music/features/player/player_audio_handler.dart';
+import 'package:cy_shine_music/features/playlists/playlist_models.dart';
 import 'package:cy_shine_music/features/playlists/playlist_store.dart';
+import 'package:cy_shine_music/features/playlists/spotify_track_match_picker.dart';
 import 'package:cy_shine_music/features/search/search_controller.dart';
 import 'package:cy_shine_music/features/search/search_page.dart';
 import 'package:cy_shine_music/features/search/search_toolbar_state.dart';
@@ -28,6 +31,74 @@ void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues({});
   });
+
+  testWidgets(
+    'Spotify picker reuses search and returns only the selected song',
+    (tester) async {
+      await _usePhoneViewport(tester);
+      final prefs = await SharedPreferences.getInstance();
+      final api = _PickerSearchApi();
+      final container = ProviderContainer(
+        overrides: [
+          sharedPreferencesProvider.overrideWithValue(prefs),
+          musicApiProvider.overrideWithValue(api),
+          searchControllerProvider.overrideWith(_TestSearchController.new),
+        ],
+      );
+      addTearDown(container.dispose);
+      MusicInfo? result;
+      final track = PlaylistTrack.fromSpotify(
+        const SpotifyTrackMetadata(
+          uri: 'spotify:track:original',
+          title: '原曲',
+          artist: '歌手',
+          occurrence: 0,
+        ),
+        null,
+      );
+      await tester.pumpWidget(
+        _testAppWithContainer(
+          container,
+          Builder(
+            builder: (context) => TextButton(
+              onPressed: () async {
+                result = await pickSpotifyTrackMatch(
+                  context,
+                  track,
+                  initialSource: MusicSource.wy,
+                );
+              },
+              child: const Text('手动匹配'),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('手动匹配'));
+      await tester.pumpAndSettle();
+      expect(api.searches, [('原曲 歌手', MusicSource.wy, 1)]);
+      expect(find.byTooltip('选择音质下载'), findsNothing);
+      expect(find.byTooltip('添加到歌单'), findsNothing);
+      final switchingSource = api.nextSearch = Completer<void>();
+      await tester.tap(find.byKey(const ValueKey('search-source-tx')));
+      await tester.pump();
+      expect(find.byType(SearchResultTile), findsNothing);
+      switchingSource.complete();
+      await tester.pumpAndSettle();
+      expect(api.searches.last, ('原曲 歌手', MusicSource.tx, 1));
+      await tester.tap(find.byTooltip('展开翻页菜单'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('下一页'));
+      await tester.pumpAndSettle();
+      expect(api.searches.last, ('原曲 歌手', MusicSource.tx, 2));
+      await tester.tap(find.byTooltip('收起翻页菜单'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('第 2 页歌曲 01'));
+      await tester.pumpAndSettle();
+      expect(result?.id, 'page-2-song-01');
+      expect(find.text('手动匹配'), findsOneWidget);
+      expect(container.read(searchControllerProvider).keyword, '搜索测试');
+    },
+  );
 
   test('app theme uses the platform system font', () {
     for (final theme in [AppTheme.light(), AppTheme.dark()]) {
@@ -440,6 +511,32 @@ class _TestSearchController extends SearchController {
       keyword: keyword,
       source: source ?? state.source,
       page: page,
+    );
+  }
+}
+
+class _PickerSearchApi extends MusicApi {
+  final searches = <(String, MusicSource, int)>[];
+  Completer<void>? nextSearch;
+
+  @override
+  Future<SearchResponse> searchMusic({
+    required String keyword,
+    required MusicSource source,
+    int page = 1,
+    int limit = 30,
+  }) async {
+    searches.add((keyword, source, page));
+    final pending = nextSearch;
+    nextSearch = null;
+    if (pending != null) await pending.future;
+    return SearchResponse(
+      list: [_music(page: page, index: 1)],
+      source: source,
+      page: page,
+      limit: limit,
+      allPage: 2,
+      total: 2,
     );
   }
 }

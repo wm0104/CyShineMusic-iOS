@@ -30,6 +30,7 @@ const String _kLyricViewBlurDisabledKey = 'lyric_view_blur_disabled';
 const String _kSquareAlbumCoverEnabledKey = 'square_album_cover_enabled';
 const String _kLyricFontWeightKey = 'lyric_font_weight';
 const String _kLyricFontSizeKey = 'lyric_font_size';
+const String _kLyricTranslationFontSizeKey = 'lyric_translation_font_size';
 const String _kCarPadModeEnabledKey = 'car_pad_mode_enabled';
 const String _kCarDisplayEnabledKey = 'car_display_enabled';
 const String _kCarDisplaySizeKey = 'car_display_size';
@@ -56,6 +57,9 @@ const kLyricFontWeightDefault = 500.0;
 const kLyricFontSizeMin = 16.0;
 const kLyricFontSizeMax = 56.0;
 const kLyricFontSizeDefault = 32.0;
+const kLyricTranslationFontSizeMin = 7.0;
+const kLyricTranslationFontSizeMax = 56.0;
+const kLyricTranslationFontSizeDefault = 14.0;
 
 double normalizeLyricFontWeight(double value) =>
     (value.clamp(kLyricFontWeightMin, kLyricFontWeightMax) / 100)
@@ -64,6 +68,10 @@ double normalizeLyricFontWeight(double value) =>
 
 double normalizeLyricFontSize(double value) =>
     value.clamp(kLyricFontSizeMin, kLyricFontSizeMax).roundToDouble();
+
+double normalizeLyricTranslationFontSize(double value) => value
+    .clamp(kLyricTranslationFontSizeMin, kLyricTranslationFontSizeMax)
+    .roundToDouble();
 
 enum AppNavigationMode {
   singleCapsule('single_capsule', '单胶囊', '原有悬浮菜单与播放条滑动切换'),
@@ -101,6 +109,7 @@ class AppSettings {
     this.squareAlbumCoverEnabled = false,
     this.lyricFontWeight = kLyricFontWeightDefault,
     this.lyricFontSize = kLyricFontSizeDefault,
+    this.lyricTranslationFontSize = kLyricTranslationFontSizeDefault,
     required this.carPadModeEnabled,
     this.carDisplayEnabled = false,
     this.carDisplaySize = 1.0,
@@ -137,6 +146,7 @@ class AppSettings {
   final bool squareAlbumCoverEnabled;
   final double lyricFontWeight;
   final double lyricFontSize;
+  final double lyricTranslationFontSize;
 
   /// Uses the split album-and-lyrics player layout on car displays and pads.
   /// This is deliberately manual so ordinary large screens retain phone UI.
@@ -180,6 +190,7 @@ class AppSettings {
     bool? squareAlbumCoverEnabled,
     double? lyricFontWeight,
     double? lyricFontSize,
+    double? lyricTranslationFontSize,
     bool? carPadModeEnabled,
     bool? carDisplayEnabled,
     double? carDisplaySize,
@@ -216,6 +227,8 @@ class AppSettings {
         squareAlbumCoverEnabled ?? this.squareAlbumCoverEnabled,
     lyricFontWeight: lyricFontWeight ?? this.lyricFontWeight,
     lyricFontSize: lyricFontSize ?? this.lyricFontSize,
+    lyricTranslationFontSize:
+        lyricTranslationFontSize ?? this.lyricTranslationFontSize,
     carPadModeEnabled: carPadModeEnabled ?? this.carPadModeEnabled,
     carDisplayEnabled: carDisplayEnabled ?? this.carDisplayEnabled,
     carDisplaySize: carDisplaySize ?? this.carDisplaySize,
@@ -285,6 +298,21 @@ class SettingsNotifier extends Notifier<AppSettings> {
     }
     final downloadDir =
         _prefs.getString(_kDownloadDirKey) ?? kDefaultDownloadDir;
+    final rawLyricSize = _prefs.get(_kLyricFontSizeKey);
+    final lyricSize = _validLyricFontSize(rawLyricSize)
+        ? normalizeLyricFontSize((rawLyricSize as num).toDouble())
+        : kLyricFontSizeDefault;
+    final rawTranslationSize = _prefs.get(_kLyricTranslationFontSizeKey);
+    // Before translation had a setting, its size followed the original lyric.
+    final translationSize = _validLyricTranslationFontSize(rawTranslationSize)
+        ? normalizeLyricTranslationFontSize(
+            (rawTranslationSize as num).toDouble(),
+          )
+        : normalizeLyricTranslationFontSize(
+            kLyricTranslationFontSizeDefault *
+                lyricSize /
+                kLyricFontSizeDefault,
+          );
     return AppSettings(
       downloadDir: downloadDir,
       localMusicDir: _prefs.getString(_kLocalMusicDirKey) ?? downloadDir,
@@ -309,11 +337,8 @@ class SettingsNotifier extends Notifier<AppSettings> {
               (_prefs.get(_kLyricFontWeightKey) as num).toDouble(),
             )
           : kLyricFontWeightDefault,
-      lyricFontSize: _validLyricFontSize(_prefs.get(_kLyricFontSizeKey))
-          ? normalizeLyricFontSize(
-              (_prefs.get(_kLyricFontSizeKey) as num).toDouble(),
-            )
-          : kLyricFontSizeDefault,
+      lyricFontSize: lyricSize,
+      lyricTranslationFontSize: translationSize,
       carPadModeEnabled: _prefs.getBool(_kCarPadModeEnabledKey) ?? false,
       carDisplayEnabled: _prefs.getBool(_kCarDisplayEnabledKey) ?? false,
       carDisplaySize: _decodeCarDisplaySize(
@@ -454,24 +479,41 @@ class SettingsNotifier extends Notifier<AppSettings> {
       value >= kLyricFontSizeMin &&
       value <= kLyricFontSizeMax;
 
+  static bool _validLyricTranslationFontSize(Object? value) =>
+      value is num &&
+      value.isFinite &&
+      value >= kLyricTranslationFontSizeMin &&
+      value <= kLyricTranslationFontSizeMax;
+
   Future<void> setLyricFontStyle({
     required double weight,
     required double size,
+    double? translationSize,
   }) async {
-    if (!_validLyricFontWeight(weight) || !_validLyricFontSize(size)) {
+    final requestedTranslationSize =
+        translationSize ?? state.lyricTranslationFontSize;
+    if (!_validLyricFontWeight(weight) ||
+        !_validLyricFontSize(size) ||
+        !_validLyricTranslationFontSize(requestedTranslationSize)) {
       throw ArgumentError('歌词字体粗细或大小超出范围');
     }
     final nextWeight = normalizeLyricFontWeight(weight);
     final nextSize = normalizeLyricFontSize(size);
+    final nextTranslationSize = normalizeLyricTranslationFontSize(
+      requestedTranslationSize,
+    );
     if (state.lyricFontWeight == nextWeight &&
-        state.lyricFontSize == nextSize) {
+        state.lyricFontSize == nextSize &&
+        state.lyricTranslationFontSize == nextTranslationSize) {
       return;
     }
+    await _prefs.setDouble(_kLyricTranslationFontSizeKey, nextTranslationSize);
     await _prefs.setDouble(_kLyricFontWeightKey, nextWeight);
     await _prefs.setDouble(_kLyricFontSizeKey, nextSize);
     state = state.copyWith(
       lyricFontWeight: nextWeight,
       lyricFontSize: nextSize,
+      lyricTranslationFontSize: nextTranslationSize,
     );
   }
 
@@ -531,6 +573,7 @@ class SettingsNotifier extends Notifier<AppSettings> {
     'squareAlbumCoverEnabled': state.squareAlbumCoverEnabled,
     'lyricFontWeight': state.lyricFontWeight,
     'lyricFontSize': state.lyricFontSize,
+    'lyricTranslationFontSize': state.lyricTranslationFontSize,
   };
 
   Future<void> applyAppearanceFromSync(Object value) async {
@@ -603,6 +646,16 @@ class SettingsNotifier extends Notifier<AppSettings> {
     final syncedLyricSize = rawLyricSize == null
         ? null
         : normalizeLyricFontSize((rawLyricSize as num).toDouble());
+    final rawTranslationSize = json['lyricTranslationFontSize'];
+    if (json.containsKey('lyricTranslationFontSize') &&
+        !_validLyricTranslationFontSize(rawTranslationSize)) {
+      throw const FormatException('云端歌词译文大小无效');
+    }
+    final syncedTranslationSize = rawTranslationSize == null
+        ? null
+        : normalizeLyricTranslationFontSize(
+            (rawTranslationSize as num).toDouble(),
+          );
     final rawPlaylistColors = json['playlistArtworkColorsEnabled'];
     if (json.containsKey('playlistArtworkColorsEnabled') &&
         rawPlaylistColors is! bool) {
@@ -626,6 +679,7 @@ class SettingsNotifier extends Notifier<AppSettings> {
       squareAlbumCoverEnabled: rawSquareCover as bool?,
       lyricFontWeight: syncedLyricWeight,
       lyricFontSize: syncedLyricSize,
+      lyricTranslationFontSize: syncedTranslationSize,
     );
     await _prefs.setString(_kThemeModeKey, rawMode);
     await _prefs.setInt(_kThemeSeedKey, rawSeed);
@@ -643,6 +697,18 @@ class SettingsNotifier extends Notifier<AppSettings> {
     }
     if (syncedLyricWeight != null) {
       await _prefs.setDouble(_kLyricFontWeightKey, syncedLyricWeight);
+    }
+    // Preserve the local translation size when an old backup updates the original.
+    if (syncedTranslationSize != null ||
+        (syncedLyricSize != null &&
+            syncedLyricSize != state.lyricFontSize &&
+            !_validLyricTranslationFontSize(
+              _prefs.get(_kLyricTranslationFontSizeKey),
+            ))) {
+      await _prefs.setDouble(
+        _kLyricTranslationFontSizeKey,
+        next.lyricTranslationFontSize,
+      );
     }
     if (syncedLyricSize != null) {
       await _prefs.setDouble(_kLyricFontSizeKey, syncedLyricSize);

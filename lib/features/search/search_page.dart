@@ -21,6 +21,7 @@ import '../music_sources/music_source_action_guard.dart';
 import '../player/player_controller.dart';
 import '../playlists/playlist_browser_sheet.dart';
 import '../playlists/playlist_models.dart';
+import '../shell/widgets/search_paging_fab.dart';
 import '../shell/widgets/shell_header.dart';
 import 'search_controller.dart';
 import 'search_toolbar_state.dart';
@@ -31,7 +32,21 @@ import 'widgets/source_filter_chips.dart';
 import '../shell/shell_navigation.dart';
 
 class SearchPage extends ConsumerStatefulWidget {
-  const SearchPage({super.key});
+  const SearchPage({super.key})
+    : initialKeyword = null,
+      initialSource = null,
+      onSongSelected = null;
+
+  const SearchPage.songPicker({
+    super.key,
+    required String this.initialKeyword,
+    required MusicSource this.initialSource,
+    required ValueChanged<MusicInfo> this.onSongSelected,
+  });
+
+  final String? initialKeyword;
+  final MusicSource? initialSource;
+  final ValueChanged<MusicInfo>? onSongSelected;
 
   @override
   ConsumerState<SearchPage> createState() => _SearchPageState();
@@ -44,12 +59,25 @@ class _SearchPageState extends ConsumerState<SearchPage> {
   Iterable<Widget> _lastSuggestionWidgets = const <Widget>[];
   AppToastHandle? _searchErrorToast;
 
+  bool get _pickingSong => widget.onSongSelected != null;
+
   @override
   void initState() {
     super.initState();
     _controller = material.SearchController();
     _resultsScrollController = ScrollController();
-    _controller.text = ref.read(searchControllerProvider).keyword;
+    _controller.text =
+        widget.initialKeyword ?? ref.read(searchControllerProvider).keyword;
+    if (_pickingSong) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final enabled = ref.read(settingsProvider).enabledSearchSources;
+        final source = enabled.contains(widget.initialSource)
+            ? widget.initialSource
+            : MusicSource.all;
+        unawaited(_runSearch(keyword: widget.initialKeyword, source: source));
+      });
+    }
   }
 
   @override
@@ -127,6 +155,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
 
   Future<void> _runSearch({
     String? keyword,
+    MusicSource? source,
     int page = 1,
     bool scrollToTopOnSuccess = false,
   }) async {
@@ -141,11 +170,11 @@ class _SearchPageState extends ConsumerState<SearchPage> {
     if (_controller.isAttached && _controller.isOpen) {
       _controller.closeView(query);
     }
-    _dismissTransientRoutes();
+    if (!_pickingSong) _dismissTransientRoutes();
     _releaseSearchFocus();
 
     final startState = ref.read(searchControllerProvider);
-    final requestedSource = _sourceForSearchRequest(startState);
+    final requestedSource = source ?? _sourceForSearchRequest(startState);
     await ref
         .read(searchControllerProvider.notifier)
         .search(keyword: query, source: requestedSource, page: page);
@@ -188,51 +217,63 @@ class _SearchPageState extends ConsumerState<SearchPage> {
       _handleSearchStateChanged,
     );
 
-    _syncToolbarState(state);
+    if (!_pickingSong) _syncToolbarState(state);
 
-    return Scaffold(
-      body: RepaintBoundary(
-        child: Column(
-          children: [
-            // 首页自绘「发现」标题（AppShell 对发现区路由不占顶栏空间），
-            // 打开歌单/榜单详情时导航器高度不变，容器变换才不会跳动。
+    final content = RepaintBoundary(
+      child: Column(
+        children: [
+          if (!_pickingSong)
+            // 发现区路由不占顶栏空间，打开详情时保持导航器高度。
             const ShellSectionHeader(title: '发现', compact: true, fontSize: 22),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 2, 12, 4),
-              child: _NativeSearchField(
-                controller: _controller,
-                onSubmitted: (v) => _runSearch(keyword: v),
-                loading: state.loading,
-                suggestionsBuilder: _buildSuggestionTiles,
-                onClear: _returnToDiscovery,
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 2, 12, 4),
+            child: _NativeSearchField(
+              controller: _controller,
+              onSubmitted: (v) => _runSearch(keyword: v),
+              loading: state.loading,
+              suggestionsBuilder: _buildSuggestionTiles,
+              onClear: _returnToDiscovery,
+              pickingSong: _pickingSong,
+            ),
+          ),
+          if (_pickingSong || state.isSearchActive) ...[
+            const SourceFilterChips(),
+            const SizedBox(height: 4),
+            if (state.resultCount == 0 && !_pickingSong)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 12),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: SizedBox(width: 108, child: SearchCategoryChips()),
+                ),
+              ),
+            Expanded(
+              child: _ResultsArea(
+                state: state,
+                scrollController: _resultsScrollController,
+                onTapItem: _openPicker,
+                onPlayItem: _play,
+                onAddToPlaylist: (music) =>
+                    addMusicToChosenPlaylist(context, ref, music),
+                onSongSelected: widget.onSongSelected,
               ),
             ),
-            if (state.isSearchActive) ...[
-              const SourceFilterChips(),
-              const SizedBox(height: 4),
-              if (state.resultCount == 0)
-                const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 12),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: SizedBox(width: 108, child: SearchCategoryChips()),
-                  ),
-                ),
-              Expanded(
-                child: _ResultsArea(
-                  state: state,
-                  scrollController: _resultsScrollController,
-                  onTapItem: _openPicker,
-                  onPlayItem: _play,
-                  onAddToPlaylist: (music) =>
-                      addMusicToChosenPlaylist(context, ref, music),
-                ),
-              ),
-            ] else
-              const Expanded(child: DiscoveryContent()),
-          ],
-        ),
+          ] else
+            const Expanded(child: DiscoveryContent()),
+        ],
       ),
+    );
+
+    return Scaffold(
+      appBar: _pickingSong ? AppBar(title: const Text('选择匹配歌曲')) : null,
+      body: _pickingSong
+          ? Stack(
+              children: [
+                content,
+                SearchPagingFabLayer(pickerState: _toolbarState(state)),
+              ],
+            )
+          : content,
     );
   }
 
@@ -283,34 +324,38 @@ class _SearchPageState extends ConsumerState<SearchPage> {
         ModalRoute.of(context)?.isCurrent == false) {
       return;
     }
-    final response = state.response;
-    final hasResults = state.resultCount > 0;
-    final canPrev = state.page > 1;
-    final allPage = response?.allPage ?? state.page;
-    final canNext =
-        hasResults && state.page < (allPage > 0 ? allPage : state.page + 1);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted ||
           !TickerMode.valuesOf(context).enabled ||
           ModalRoute.of(context)?.isCurrent == false) {
         return;
       }
-      final next = SearchToolbarState(
-        visible: hasResults || canPrev,
-        page: state.page,
-        loading: state.loading,
-        canPrev: canPrev,
-        canNext: canNext,
-        onPrev: () =>
-            _runSearch(page: state.page - 1, scrollToTopOnSuccess: true),
-        onNext: () =>
-            _runSearch(page: state.page + 1, scrollToTopOnSuccess: true),
-      );
       // Always refresh the callbacks as well as the visible paging values.
       // They close over the current SearchState page; keeping an older state
       // object here makes the FAB look correct while invoking a stale page.
-      ref.read(searchToolbarStateProvider.notifier).state = next;
+      ref.read(searchToolbarStateProvider.notifier).state = _toolbarState(
+        state,
+      );
     });
+  }
+
+  SearchToolbarState _toolbarState(SearchState state) {
+    final hasResults = state.resultCount > 0 &&
+        (!_pickingSong || state.error == null);
+    final canPrev = state.page > 1;
+    final allPage = state.response?.allPage ?? state.page;
+    return SearchToolbarState(
+      visible: hasResults || canPrev,
+      page: state.page,
+      loading: state.loading,
+      canPrev: canPrev,
+      canNext:
+          hasResults && state.page < (allPage > 0 ? allPage : state.page + 1),
+      onPrev: () =>
+          _runSearch(page: state.page - 1, scrollToTopOnSuccess: true),
+      onNext: () =>
+          _runSearch(page: state.page + 1, scrollToTopOnSuccess: true),
+    );
   }
 
   void _dismissTransientRoutes() {
@@ -331,7 +376,8 @@ class _SearchPageState extends ConsumerState<SearchPage> {
 
   void _handleSearchStateChanged(SearchState? previous, SearchState next) {
     if (!mounted) return;
-    if (_controller.text != next.keyword && !(_controller.isAttached && _controller.isOpen)) {
+    if (_controller.text != next.keyword &&
+        !(_controller.isAttached && _controller.isOpen)) {
       _controller.text = next.keyword;
     }
     if (previous?.category != next.category ||
@@ -359,7 +405,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
   }
 
   MusicSource _sourceForSearchRequest(SearchState state) {
-    if (state.isSearchActive) return state.source;
+    if (_pickingSong || state.isSearchActive) return state.source;
     final discoverySource = ref.read(selectedDiscoverySourceProvider);
     final enabled = ref.read(settingsProvider).enabledSearchSources;
     if (enabled.contains(discoverySource)) return discoverySource;
@@ -376,12 +422,14 @@ class _NativeSearchField extends StatelessWidget {
     required this.onClear,
     required this.loading,
     required this.suggestionsBuilder,
+    required this.pickingSong,
   });
 
   final material.SearchController controller;
   final ValueChanged<String> onSubmitted;
   final VoidCallback onClear;
   final bool loading;
+  final bool pickingSong;
   final Future<Iterable<Widget>> Function(
     BuildContext context,
     material.SearchController controller,
@@ -414,7 +462,7 @@ class _NativeSearchField extends StatelessWidget {
     return SearchAnchor.bar(
       searchController: controller,
       isFullScreen: false,
-      barHintText: '搜索歌曲、歌手、专辑',
+      barHintText: pickingSong ? '搜索歌名、歌手或专辑' : '搜索歌曲、歌手、专辑',
       barLeading: Icon(
         Icons.search_rounded,
         color: scheme.onSurfaceVariant,
@@ -808,6 +856,7 @@ class _ResultsArea extends StatelessWidget {
     required this.onTapItem,
     required this.onPlayItem,
     required this.onAddToPlaylist,
+    this.onSongSelected,
   });
 
   final SearchState state;
@@ -815,9 +864,11 @@ class _ResultsArea extends StatelessWidget {
   final ValueChanged<MusicInfo> onTapItem;
   final ValueChanged<MusicInfo> onPlayItem;
   final ValueChanged<MusicInfo> onAddToPlaylist;
+  final ValueChanged<MusicInfo>? onSongSelected;
 
   @override
   Widget build(BuildContext context) {
+    final pickingSong = onSongSelected != null;
     final artists = state.category == SearchCategory.artists;
     if (artists && !MusicApi.artistSources.contains(state.source)) {
       return _CenterStatus(
@@ -828,15 +879,23 @@ class _ResultsArea extends StatelessWidget {
         compact: true,
       );
     }
-    if (state.loading && state.response == null) {
+    if (state.loading && (pickingSong || state.response == null)) {
       return _SearchLoadingStatus(artistSource: artists ? state.source : null);
+    }
+    if (pickingSong && state.error != null) {
+      return const _CenterStatus(
+        icon: Icons.manage_search_rounded,
+        title: '搜索失败',
+        subtitle: '可以重试搜索或切换音乐来源',
+        compact: true,
+      );
     }
     final response = state.response;
     if (response == null) {
-      return const _CenterStatus(
-        art: _SearchPreludeArt(),
+      return _CenterStatus(
+        art: const _SearchPreludeArt(),
         title: '即刻开始搜索',
-        subtitle: '输入歌名、歌手或专辑，发现可播放与下载的版本',
+        subtitle: pickingSong ? '输入歌名、歌手或专辑' : '输入歌名、歌手或专辑，发现可播放与下载的版本',
       );
     }
     if (state.resultCount == 0) {
@@ -856,7 +915,9 @@ class _ResultsArea extends StatelessWidget {
         12,
         0,
         12,
-        ShellBottomArea.contentPadding(context, 156),
+        pickingSong
+            ? 86 + MediaQuery.paddingOf(context).bottom
+            : ShellBottomArea.contentPadding(context, 156),
       ),
       itemCount: state.resultCount + 1,
       separatorBuilder: (_, index) =>
@@ -865,8 +926,10 @@ class _ResultsArea extends StatelessWidget {
         if (index == 0) {
           return Row(
             children: [
-              const SizedBox(width: 108, child: SearchCategoryChips()),
-              const SizedBox(width: 8),
+              if (!pickingSong) ...[
+                const SizedBox(width: 108, child: SearchCategoryChips()),
+                const SizedBox(width: 8),
+              ],
               Expanded(
                 child: _ResultsSummary(
                   visibleCount: state.resultCount,
@@ -880,8 +943,13 @@ class _ResultsArea extends StatelessWidget {
             ],
           );
         }
-        if (artists) return ArtistResultTile(artist: response.artists[index - 1]);
+        if (artists) {
+          return ArtistResultTile(artist: response.artists[index - 1]);
+        }
         final music = response.list[index - 1];
+        if (onSongSelected case final select?) {
+          return SearchResultTile(music: music, onSelect: () => select(music));
+        }
         return _ResultTile(
           music: music,
           onTapItem: onTapItem,

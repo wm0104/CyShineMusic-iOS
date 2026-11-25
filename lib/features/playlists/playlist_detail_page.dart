@@ -29,6 +29,7 @@ import 'playlist_models.dart';
 import 'playlist_search.dart';
 import 'playlist_store.dart';
 import 'resolved_playlist_track.dart';
+import 'spotify_track_match_picker.dart';
 import 'widgets/playlist_batch_download_bar.dart';
 import 'widgets/playlist_artwork.dart';
 import 'widgets/playlist_detail_actions.dart';
@@ -551,6 +552,10 @@ class _PlaylistDetailPageState extends ConsumerState<PlaylistDetailPage> {
           selected: _selectedTrackIds.contains(item.track.id),
           onToggleSelected: () => _toggleSelection(item),
           onPlay: () => _playTrack(context, ref, item, queue),
+          onMatch:
+              playlist.originSourceCode == 'spotify' && item.track.spotify != null
+              ? () => _pickTrackMatch(playlist.id, item.track)
+              : null,
           onDownload: item.track.musicInfo == null
               ? null
               : () => showQualityPickerSheet(context, item.track.musicInfo!),
@@ -1290,6 +1295,25 @@ class _PlaylistDetailPageState extends ConsumerState<PlaylistDetailPage> {
     await ref
         .read(playerControllerProvider.notifier)
         .playFromPlaylistQueue(entry, queue);
+  }
+
+  Future<void> _pickTrackMatch(String playlistId, PlaylistTrack track) async {
+    final picked = await pickSpotifyTrackMatch(context, track);
+    if (picked == null || !mounted || widget.playlistId != playlistId) return;
+    try {
+      final updated = await ref
+          .read(localPlaylistsProvider.notifier)
+          .setSpotifyTrackMatch(playlistId, expected: track, music: picked);
+      if (!mounted || widget.playlistId != playlistId) return;
+      showAppToast(
+        context,
+        updated ? '已更新「${track.name}」的匹配' : '歌单歌曲已变化，请重新选择',
+        type: updated ? AppToastType.success : AppToastType.warning,
+      );
+    } catch (error) {
+      if (!mounted || widget.playlistId != playlistId) return;
+      showAppToast(context, '保存匹配失败：$error', type: AppToastType.error);
+    }
   }
 
   Future<void> _removeTrack(

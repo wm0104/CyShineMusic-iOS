@@ -12,6 +12,7 @@ import 'package:cy_shine_music/core/models/download_capabilities.dart';
 import 'package:cy_shine_music/core/models/enums.dart';
 import 'package:cy_shine_music/core/models/music_info.dart';
 import 'package:cy_shine_music/core/models/playlist_info.dart';
+import 'package:cy_shine_music/core/models/search_response.dart';
 import 'package:cy_shine_music/core/music_sources/music_source_controller.dart';
 import 'package:cy_shine_music/core/services/download_service.dart';
 import 'package:cy_shine_music/core/storage/settings_store.dart';
@@ -24,6 +25,7 @@ import 'package:cy_shine_music/features/playlists/playlist_detail_toolbar_state.
 import 'package:cy_shine_music/features/playlists/playlist_management_page.dart';
 import 'package:cy_shine_music/features/playlists/playlist_models.dart';
 import 'package:cy_shine_music/features/playlists/playlist_store.dart';
+import 'package:cy_shine_music/features/playlists/widgets/playlist_track_tile.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -672,6 +674,91 @@ void main() {
     await tester.pump(const Duration(seconds: 5));
   });
 
+  testWidgets(
+    'manually match a saved Spotify row and replace another occurrence',
+    (tester) async {
+      await _useCompactViewport(tester, size: const Size(390, 900));
+      PlaylistTrack occurrence(int index, MusicInfo? match) =>
+          PlaylistTrack.fromSpotify(
+            SpotifyTrackMetadata(
+              uri: 'spotify:track:same',
+              title: '原始曲名',
+              artist: '原始歌手',
+              occurrence: index,
+            ),
+            match,
+          );
+      final pending = occurrence(0, null);
+      final matched = occurrence(1, _playlistMusic('previous', '旧匹配'));
+      final tracks = [pending, matched];
+      final prefs = await _prefsWith([
+        _playlist(
+          id: 'spotify',
+          name: '测试歌单',
+          tracks: tracks,
+          originPlaylistId: 'spotify-id',
+          originSourceCode: 'spotify',
+        ).copyWith(customTrackOrder: [matched.id, pending.id]),
+      ]);
+      final container = ProviderContainer(
+        overrides: [
+          sharedPreferencesProvider.overrideWithValue(prefs),
+          musicApiProvider.overrideWithValue(_ManualMatchMusicApi()),
+        ],
+      );
+      addTearDown(container.dispose);
+      await tester.pumpWidget(
+        _testAppWithContainer(
+          container,
+          const PlaylistDetailPage(playlistId: 'spotify'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      Finder row(PlaylistTrack track) => find.byWidgetPredicate(
+        (widget) =>
+            widget is PlaylistTrackTile && widget.item.track.id == track.id,
+      );
+      LocalPlaylist saved() => container.read(localPlaylistsProvider).single;
+
+      await tester.tap(find.byTooltip('批量操作'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(row(pending));
+      await tester.tap(row(pending));
+      await tester.pumpAndSettle();
+      expect(find.text('已选中 1 项'), findsOneWidget);
+      await tester.tap(find.byTooltip('退出批量管理'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(row(pending));
+      await tester.tap(row(pending));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('第一候选'));
+      await tester.pumpAndSettle();
+      expect(saved().tracks.map((track) => track.musicId), [
+        'candidate-1',
+        'previous',
+      ]);
+
+      await tester.ensureVisible(row(matched));
+      await tester.drag(row(matched), const Offset(-240, 0));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('更换匹配').hitTestable());
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('第二候选'));
+      await tester.pumpAndSettle();
+      expect(saved().tracks.map((track) => track.musicId), [
+        'candidate-1',
+        'candidate-2',
+      ]);
+      expect(saved().tracks.map((track) => track.id), [pending.id, matched.id]);
+      expect(saved().customOrderedTracks.map((track) => track.id), [
+        matched.id,
+        pending.id,
+      ]);
+      expect(saved().tracks.map((track) => track.name), ['原始曲名', '原始曲名']);
+      await tester.pump(const Duration(seconds: 5));
+    },
+  );
+
   testWidgets('swipe to remove a playlist track without confirmation', (
     tester,
   ) async {
@@ -691,6 +778,7 @@ void main() {
 
     await tester.drag(find.text('第一首'), const Offset(-260, 0));
     await tester.pumpAndSettle();
+    expect(find.text('更换匹配'), findsNothing);
     await tester.tap(find.text('移除'));
     await tester.pump(const Duration(milliseconds: 300));
 
@@ -794,6 +882,32 @@ class _FakeMusicApi extends MusicApi {
   }) async {
     return playlist;
   }
+}
+
+class _ManualMatchMusicApi extends MusicApi {
+  @override
+  Future<SearchResponse> searchMusic({
+    required String keyword,
+    required MusicSource source,
+    int page = 1,
+    int limit = 30,
+  }) async => SearchResponse(
+    list: [
+      _playlistMusic('candidate-1', '第一候选'),
+      _playlistMusic('candidate-2', '第二候选'),
+    ],
+    page: page,
+    limit: limit,
+    allPage: 1,
+    total: 2,
+    source: source,
+  );
+
+  @override
+  Future<String?> getPicUrl({
+    required MusicInfo musicInfo,
+    bool preferCached = true,
+  }) async => null;
 }
 
 class _CoverResolvingMusicApi extends MusicApi {

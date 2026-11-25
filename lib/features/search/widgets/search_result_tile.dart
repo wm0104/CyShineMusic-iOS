@@ -17,8 +17,10 @@ class SearchResultTile extends StatelessWidget {
   const SearchResultTile({
     super.key,
     required this.music,
-    required this.onDownload,
-    required this.onPlay,
+    this.onDownload,
+    this.onPlay,
+    this.onSelect,
+    this.additionalAction,
     this.onAddToPlaylist,
     this.downloadTask,
     this.coverUrl,
@@ -26,11 +28,13 @@ class SearchResultTile extends StatelessWidget {
     this.onCoverError,
     this.displayName,
     this.displaySinger,
-  });
+  }) : assert(onSelect != null || (onDownload != null && onPlay != null));
 
   final MusicInfo music;
-  final VoidCallback onDownload;
-  final VoidCallback onPlay;
+  final VoidCallback? onDownload;
+  final VoidCallback? onPlay;
+  final VoidCallback? onSelect;
+  final Widget? additionalAction;
   final VoidCallback? onAddToPlaylist;
   final DownloadTask? downloadTask;
   final String? coverUrl;
@@ -69,33 +73,37 @@ class SearchResultTile extends StatelessWidget {
         onError: onCoverError,
       ),
       onPlay: onPlay,
+      onSelect: onSelect,
       backgroundColor: backgroundColor,
-      actions: [
-        if (onAddToPlaylist != null) ...[
-          ExpressiveDownloadButton(
-            key: ValueKey('search-result-add-to-playlist-${music.id}'),
-            isLoading: false,
-            onPressed: onAddToPlaylist,
-            tooltip: '添加到歌单',
-            size: 36,
-            tapTargetSize: 40,
-            tonal: true,
-            idleIcon: Icons.playlist_add_rounded,
-          ),
-          const SizedBox(width: 2),
-        ],
-        ExpressiveDownloadButton(
-          key: ValueKey('search-result-download-${music.id}'),
-          isLoading: busy,
-          isDone: done,
-          progress: task?.fraction,
-          onPressed: busy || done ? null : onDownload,
-          tooltip: buttonTooltip,
-          size: 36,
-          tapTargetSize: 40,
-          tonal: true,
-        ),
-      ],
+      actions: onSelect != null
+          ? const []
+          : [
+              ?additionalAction,
+              if (onAddToPlaylist != null) ...[
+                ExpressiveDownloadButton(
+                  key: ValueKey('search-result-add-to-playlist-${music.id}'),
+                  isLoading: false,
+                  onPressed: onAddToPlaylist,
+                  tooltip: '添加到歌单',
+                  size: 36,
+                  tapTargetSize: 40,
+                  tonal: true,
+                  idleIcon: Icons.playlist_add_rounded,
+                ),
+                const SizedBox(width: 2),
+              ],
+              ExpressiveDownloadButton(
+                key: ValueKey('search-result-download-${music.id}'),
+                isLoading: busy,
+                isDone: done,
+                progress: task?.fraction,
+                onPressed: busy || done ? null : onDownload,
+                tooltip: buttonTooltip,
+                size: 36,
+                tapTargetSize: 40,
+                tonal: true,
+              ),
+            ],
     );
   }
 }
@@ -110,6 +118,8 @@ class TrackResultRow extends StatelessWidget {
     this.interval,
     this.cover = const _Cover(picUrl: null, loading: false),
     this.onPlay,
+    this.onSelect,
+    this.selectionHint = '轻触选择歌曲',
     this.backgroundColor = Colors.transparent,
     this.actions = const [],
   });
@@ -121,6 +131,8 @@ class TrackResultRow extends StatelessWidget {
   final String? interval;
   final Widget cover;
   final VoidCallback? onPlay;
+  final VoidCallback? onSelect;
+  final String selectionHint;
   final Color backgroundColor;
   final List<Widget> actions;
 
@@ -139,10 +151,14 @@ class TrackResultRow extends StatelessWidget {
       child: Material(
         color: Colors.transparent,
         child: Semantics(
-          button: onPlay != null,
-          hint: onPlay == null ? null : '轻触播放',
+          button: onSelect != null || onPlay != null,
+          hint: onSelect != null
+              ? selectionHint
+              : onPlay == null
+              ? null
+              : '轻触播放',
           child: InkWell(
-            onTap: onPlay,
+            onTap: onSelect ?? onPlay,
             child: Padding(
               padding: const EdgeInsets.fromLTRB(4, 2, 2, 2),
               child: Row(

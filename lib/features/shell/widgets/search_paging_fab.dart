@@ -9,7 +9,9 @@ import 'shell_fab_menu_action.dart';
 import 'toolbar_metrics.dart';
 
 class SearchPagingFabLayer extends ConsumerStatefulWidget {
-  const SearchPagingFabLayer({super.key});
+  const SearchPagingFabLayer({super.key, this.pickerState});
+
+  final SearchToolbarState? pickerState;
 
   @override
   ConsumerState<SearchPagingFabLayer> createState() =>
@@ -37,7 +39,9 @@ class _SearchPagingFabLayerState extends ConsumerState<SearchPagingFabLayer> {
         bottomArea!.extent == 0) {
       return const SizedBox.shrink();
     }
-    final state = ref.watch(searchToolbarStateProvider);
+    final state =
+        widget.pickerState ??
+        ref.watch<SearchToolbarState>(searchToolbarStateProvider);
     if (!state.visible) {
       if (_expanded) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -50,13 +54,15 @@ class _SearchPagingFabLayerState extends ConsumerState<SearchPagingFabLayer> {
     final wideLayout = toolbarUsesWideMetrics(MediaQuery.sizeOf(context));
     final fabPadding = EdgeInsets.only(
       right: wideLayout ? 104 : 18,
-      bottom: switch (bottomArea?.navigationMode) {
-        AppNavigationMode.native =>
-          bottomArea!.extent - MediaQuery.paddingOf(context).bottom + 24,
-        AppNavigationMode.dualCapsule =>
-          bottomArea!.extent - MediaQuery.paddingOf(context).bottom + 16,
-        _ => 82,
-      },
+      bottom: widget.pickerState != null
+          ? 16
+          : switch (bottomArea?.navigationMode) {
+              AppNavigationMode.native =>
+                bottomArea!.extent - MediaQuery.paddingOf(context).bottom + 24,
+              AppNavigationMode.dualCapsule =>
+                bottomArea!.extent - MediaQuery.paddingOf(context).bottom + 16,
+              _ => 82,
+            },
     );
 
     return Stack(
@@ -81,6 +87,9 @@ class _SearchPagingFabLayerState extends ConsumerState<SearchPagingFabLayer> {
                 onToggle: () => _setExpanded(!_expanded),
                 onPrev: () => _runPageAction(state.onPrev),
                 onNext: () => _runPageAction(state.onNext),
+                heroTag: widget.pickerState == null
+                    ? 'search-paging-fab'
+                    : null,
               ),
             ),
           ),
@@ -97,6 +106,7 @@ class _SearchPagingFabMenu extends StatelessWidget {
     required this.onToggle,
     required this.onPrev,
     required this.onNext,
+    required this.heroTag,
   });
 
   final SearchToolbarState state;
@@ -104,6 +114,7 @@ class _SearchPagingFabMenu extends StatelessWidget {
   final VoidCallback onToggle;
   final VoidCallback onPrev;
   final VoidCallback onNext;
+  final String? heroTag;
 
   @override
   Widget build(BuildContext context) {
@@ -151,7 +162,7 @@ class _SearchPagingFabMenu extends StatelessWidget {
         ),
         const SizedBox(height: 10),
         FloatingActionButton.extended(
-          heroTag: 'search-paging-fab',
+          heroTag: heroTag,
           tooltip: expanded ? '收起翻页菜单' : '展开翻页菜单',
           elevation: 3,
           highlightElevation: 4,

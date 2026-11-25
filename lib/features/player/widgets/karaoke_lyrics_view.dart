@@ -98,7 +98,9 @@ class _KaraokeLyricsViewState extends ConsumerState<KaraokeLyricsView>
     _scheduleScrollToActive(retriesLeft: 1);
     _scheduleLineAdvance();
     ref.listenManual(
-      settingsProvider.select((s) => (s.lyricFontWeight, s.lyricFontSize)),
+      settingsProvider.select(
+        (s) => (s.lyricFontWeight, s.lyricFontSize, s.lyricTranslationFontSize),
+      ),
       (previous, next) {
         _beginTranslationLayoutAnchor(
           duration: const Duration(milliseconds: 700),
