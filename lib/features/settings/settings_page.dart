@@ -28,6 +28,7 @@ import '../shell/shell_toolbar_visibility.dart';
 import '../shell/shell_bottom_area.dart';
 import '../songs/local_song_scan_cache.dart';
 import '../update/app_update_prompt.dart';
+import '../update/app_update_section.dart';
 import 'widgets/color_picker_sheet.dart';
 import 'widgets/app_icon_sheet.dart';
 import 'widgets/color_style_row.dart';
@@ -638,7 +639,10 @@ class SettingsPage extends ConsumerWidget {
                         SettingsCard(
                           title: '关于',
                           children: [
-                            SettingsAction(
+                            if (Platform.isIOS)
+                              const AppUpdateSection()
+                            else
+                              SettingsAction(
                               key: const ValueKey('check-update-setting'),
                               icon: Icons.system_update_alt_rounded,
                               title: '检查更新',

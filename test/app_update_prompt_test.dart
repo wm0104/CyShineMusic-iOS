@@ -5,6 +5,10 @@ import 'package:cy_shine_music/core/app_info.dart';
 import 'package:cy_shine_music/core/services/app_update_service.dart';
 import 'package:cy_shine_music/core/ui/app_toast.dart';
 import 'package:cy_shine_music/features/update/app_update_prompt.dart';
+import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:cy_shine_music/core/storage/settings_store.dart';
+import 'package:cy_shine_music/features/update/app_update_controller.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
@@ -152,6 +156,29 @@ void main() {
     await tester.pumpAndSettle();
   });
 
+  testWidgets('iOS check marks pending update without an install dialog or launcher', (tester) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    try {
+      final service = _FakeAppUpdateService(release: _release(version: '2.0.9',
+        pageUri: 'https://github.com/wm0104/CyShineMusic-iOS/releases/tag/v2.0.9'));
+      final launched = <Uri>[];
+      AppUpdateCheckOutcome? outcome;
+      await _pumpHarness(tester, service: service,
+        launcher: (uri) async { launched.add(uri); return true; },
+        onOutcome: (value) => outcome = value);
+      await tester.tap(find.byKey(const ValueKey('check-update')));
+      await tester.pumpAndSettle();
+      expect(outcome, AppUpdateCheckOutcome.updateAvailable);
+      expect(find.byKey(const ValueKey('app-update-dialog')), findsNothing);
+      final context = tester.element(find.byKey(const ValueKey('check-update')));
+      expect(ProviderScope.containerOf(context).read(appUpdateControllerProvider).release!.version,
+        Version(2, 0, 9));
+      expect(launched, isEmpty);
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+
   testWidgets('concurrent checks share one request and do not stack dialogs', (
     tester,
   ) async {
@@ -209,9 +236,12 @@ Future<void> _pumpHarness(
     buildSignature: '',
   );
 
+  SharedPreferences.setMockInitialValues({});
+  final preferences = await SharedPreferences.getInstance();
   await tester.pumpWidget(
     ProviderScope(
       overrides: [
+        sharedPreferencesProvider.overrideWithValue(preferences),
         appUpdateServiceProvider.overrideWithValue(service),
         externalUriLauncherProvider.overrideWithValue(launcher),
       ],

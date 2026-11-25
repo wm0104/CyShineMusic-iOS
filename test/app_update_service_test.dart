@@ -6,6 +6,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pub_semver/pub_semver.dart';
 
+import 'fixtures/ios_update_manifest_fixture.dart';
+
 void main() {
   group('app version comparison', () {
     test('accepts a v-prefixed semantic version', () {
@@ -62,40 +64,31 @@ void main() {
 
   group('AppUpdateService', () {
     group('on iOS', () {
-      const repository = 'wm0104/CyShineMusic-iOS';
-      const tag = 'ios-v2.0.7';
       setUp(() => debugDefaultTargetPlatformOverride = TargetPlatform.iOS);
       tearDown(() => debugDefaultTargetPlatformOverride = null);
 
-      test('checks the port and opens its matching release', () async {
-        const page = 'https://github.com/$repository/releases/tag/$tag';
-        final dio = _dioReturning({
-          'tag_name': tag,
-          'html_url': page,
-        }, repository: repository);
+      test('checks the public manifest and opens its matching release', () async {
+        final adapter = IosManifestAdapter(iosManifest());
+        final dio = iosManifestDio(adapter);
         addTearDown(dio.close);
 
         final release = await AppUpdateService(dio: dio).fetchLatestRelease();
-        expect(release!.version, Version(2, 0, 7));
-        expect(release.pageUri, Uri.parse(page));
+        expect(release!.version, Version(2, 0, 9));
+        expect(release.pageUri, Uri.parse(releasePage));
+        expect(adapter.requests, 1);
       });
 
-      test(
-        'rejects a release link pointing at the Android repository',
-        () async {
-          final dio = _dioReturning({
-            'tag_name': tag,
-            'html_url':
-                'https://github.com/KevinllBin/CyShineMusic/releases/tag/$tag',
-          }, repository: repository);
-          addTearDown(dio.close);
+      test('rejects a release link pointing at the Android repository', () async {
+        final data = iosManifest()
+          ..['page_url'] = 'https://github.com/KevinllBin/CyShineMusic/releases/tag/ios-v2.0.9';
+        final dio = iosManifestDio(IosManifestAdapter(data));
+        addTearDown(dio.close);
 
-          await expectLater(
-            AppUpdateService(dio: dio).fetchLatestRelease(),
-            throwsA(isA<FormatException>()),
-          );
-        },
-      );
+        await expectLater(
+          AppUpdateService(dio: dio).fetchLatestRelease(),
+          throwsA(isA<FormatException>()),
+        );
+      });
     });
 
     test('parses a valid latest release response', () async {

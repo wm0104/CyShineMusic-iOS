@@ -555,12 +555,23 @@ final class CyShineSecurityScopedStore {
 // MARK: - 外部音频文件
 
 @available(iOS 13.0, *)
-final class CyShineAudioIntentChannel {
+final class CyShineAudioIntentChannel: NSObject, UIDocumentPickerDelegate {
+
+  private var exportResult: FlutterResult?
 
   func handle(_ call: FlutterMethodCall, _ result: @escaping FlutterResult) {
     switch call.method {
     case "takePendingAudio":
       result(CyShineIncomingAudio.shared.takePendingPath())
+
+    case "saveUpdateIpa":
+      guard let args = call.arguments as? [String: Any],
+            let path = args["path"] as? String,
+            path.hasSuffix(".ipa"), FileManager.default.fileExists(atPath: path) else {
+        result(FlutterError(code: "NOT_FOUND", message: "更新 IPA 不存在", details: nil))
+        return
+      }
+      exportUpdateIpa(path: path, result: result)
 
     case "openAudio":
       guard let args = call.arguments as? [String: Any],
@@ -577,6 +588,42 @@ final class CyShineAudioIntentChannel {
     default:
       result(FlutterMethodNotImplemented)
     }
+  }
+
+  /// 直接导出更新暂存文件；不在 Documents 创建或覆盖同名中间文件。
+  private func exportUpdateIpa(path: String, result: @escaping FlutterResult) {
+    DispatchQueue.main.async {
+      guard self.exportResult == nil else {
+        result(FlutterError(code: "EXPORT_BUSY", message: "正在保存，请稍候", details: nil))
+        return
+      }
+      guard let root = CyShineIncomingAudio.shared.topViewController() else {
+        result(FlutterError(code: "OPEN_FAILED", message: "找不到可用的界面", details: nil))
+        return
+      }
+      if #available(iOS 14.0, *) {
+        let picker = UIDocumentPickerViewController(
+          forExporting: [URL(fileURLWithPath: path)], asCopy: true)
+        self.exportResult = result
+        picker.delegate = self
+        root.present(picker, animated: true)
+      } else {
+        result(FlutterError(code: "UNSUPPORTED", message: "请使用分享保存 IPA", details: nil))
+      }
+    }
+  }
+
+  func documentPicker(_ controller: UIDocumentPickerViewController,
+                      didPickDocumentsAt urls: [URL]) {
+    let result = exportResult
+    exportResult = nil
+    result?(!urls.isEmpty)
+  }
+
+  func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+    let result = exportResult
+    exportResult = nil
+    result?(false)
   }
 
   private func presentShareSheet(path: String, result: @escaping FlutterResult) {
@@ -857,17 +904,8 @@ final class CyShineAppTaskChannel {
     }
   }
 
-  /// ★ 判断「Widget 扩展到底有没有被系统加载」—— 这是灵动岛不显示时最关键的一个问题。
-  ///
-  ///   为什么必须用 `WidgetCenter.getCurrentConfigurations`：
-  ///   扩展的 `.appex` 文件**在不在包里**，和 iOS**有没有加载它**，是两件事。
-  ///   侧载重签时如果没给嵌套的 .appex 单独签名，文件还在、系统却不会加载它 ——
-  ///   此时 `Activity.request` 依然会**成功返回**（ActivityKit 不校验扩展存在），
-  ///   但屏幕上什么都不会出现。这正是我们观察到的现象：
-  ///     日志里 `活动已发起 id=...`，但锁屏与灵动岛都没有卡片。
-  ///
-  ///   `getCurrentConfigurations` 返回空数组 ⇒ 系统手里没有任何来自本 App 的小组件
-  ///   ⇒ 扩展没被加载，问题不在 ActivityKit 而在签名/安装。
+  /// 查询已配置的桌面 Widget。空列表只表示用户尚未配置，不能判断扩展加载或签名。
+  /// 查询失败仅表示配置情况未知；系统媒体岛不依赖此扩展或 ActivityKit 开关。
   private func widgetStatus(_ result: @escaping FlutterResult) {
     let app = Bundle.main
     let appId = app.bundleIdentifier ?? "?"
@@ -888,32 +926,31 @@ final class CyShineAppTaskChannel {
     } ?? false
     base["extensionIdentifier"] = appex.flatMap { Bundle(url: $0)?.bundleIdentifier } ?? "?"
 
+    base["customPlaybackActivitiesDisabled"] = true
+    base["widgetSharedContainerAvailable"] = FileManager.default.containerURL(
+      forSecurityApplicationGroupIdentifier: "group.com.cyshine.music") != nil
     if #available(iOS 16.2, *) {
-      base["liveActivitiesEnabled"] = ActivityAuthorizationInfo().areActivitiesEnabled
       base["activityCount"] = Activity<CyShineActivityAttributes>.activities.count
     } else {
-      base["liveActivitiesEnabled"] = false
       base["activityCount"] = 0
     }
 
     WidgetCenter.shared.getCurrentConfigurations { configs in
       var out = base
-      var count = -1
       switch configs {
       case .success(let list):
-        count = list.count
         out["widgetConfigCount"] = list.count
         out["widgetKinds"] = list.map { $0.kind }
-        out["extensionLoaded"] = !list.isEmpty
+        out["configurationQuerySucceeded"] = true
+        out["verdict"] = list.isEmpty
+          ? "尚未配置桌面小组件（不能据此判断扩展加载或签名）"
+          : "已配置 \(list.count) 个桌面小组件"
       case .failure(let error):
         out["widgetConfigCount"] = -1
-        out["extensionLoaded"] = false
+        out["configurationQuerySucceeded"] = false
+        out["verdict"] = "桌面小组件配置查询失败，配置情况未知"
         out["configError"] = "\(error)"
       }
-      let loaded = (out["extensionLoaded"] as? Bool) ?? false
-      out["verdict"] = loaded
-        ? "扩展已被系统加载（\(count) 个小组件）"
-        : "扩展未被系统加载⚠ —— 侧载重签多半没给 .appex 单独签名"
       DispatchQueue.main.async { result(out) }
     }
   }

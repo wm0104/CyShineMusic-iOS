@@ -1,9 +1,5 @@
-// CyShineMusic 灵动岛（实时活动）+ 锁屏播放卡片。
-//
-// 灵动岛 UI 本身是 iOS 16.1 起的，但主 App 侧发起/更新/结束活动用的
-// `Activity.request/update/end` 与 `ActivityContent` 是 **16.2** 才有的。
-// 两端必须同一个门槛，否则会出现「UI 能编译、桥接编译不过」，这里统一按 16.2。
-// 主 App 侧由 ios/Runner/CyShineLiveActivityBridge.swift 负责 start/update/end。
+// 旧版自定义播放活动 UI，仅保留源码，不再由 WidgetBundle 导出。
+// 系统媒体岛由 audio_service / NowPlaying 驱动，与本 UI 无关。
 
 import ActivityKit
 import SwiftUI

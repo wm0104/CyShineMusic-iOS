@@ -82,5 +82,8 @@ jobs:
           if [[ -n "$newest" && "$(printf '%s\n' "$newest" "$TAG" | sort -V | tail -n1)" != "$TAG" ]]; then
             latest=false
           fi
-          gh release create "$TAG" dist/CyShineMusic-unsigned.ipa --target "$SOURCE_SHA" \
+          python3 tool/create_ios_update_manifest.py dist/CyShineMusic-unsigned.ipa \
+            --tag "$TAG" --commit "$SOURCE_SHA" --notes-file "$RUNNER_TEMP/release-notes" \
+            --output dist/ios-update.json
+          gh release create "$TAG" dist/CyShineMusic-unsigned.ipa dist/ios-update.json --target "$SOURCE_SHA" \
             --title "${TAG#ios-v}" --notes-file "$RUNNER_TEMP/release-notes" --latest="$latest"

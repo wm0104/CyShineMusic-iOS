@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/foundation.dart';
@@ -10,15 +11,8 @@ import '../../core/ui/cover_image_source.dart';
 import 'player_audio_handler.dart';
 import 'player_controller.dart';
 
-/// 灵动岛 / 锁屏实时活动（Live Activity）的驱动。
-///
-/// iOS 通过同一通道更新实时活动和具有 App Group 权限的桌面小组件。
-/// 原生实现见 ios/Runner/CyShineLiveActivityBridge.swift，
-/// 渲染见 ios/CyShineMusicWidget/CyShineLiveActivityWidget.swift。
-///
-/// 更新频率刻意压得很低：只在**换歌 / 播放暂停 / 跳转**时推一次。
-/// 进度条由原生侧的 `ProgressView(timerInterval:)` 自己推进，
-/// 所以不需要每秒推更新。
+/// iOS 桌面 Widget 状态与封面同步，沿用旧 provider / MethodChannel 名称。
+/// 系统媒体岛由 audio_service / NowPlaying 驱动；不再创建自定义播放活动。
 final liveActivityProvider = Provider<LiveActivityService>((ref) {
   final service = LiveActivityService(ref);
   ref.onDispose(service.dispose);
@@ -44,13 +38,14 @@ class LiveActivityService {
   bool _available = false;
   bool _checking = false;
   bool _subscriptionsReady = false;
-  String? _activeTrackId;
   String? _lastSignature;
+  int _revision = 0;
+  PlayerState _playerState = const PlayerState();
   StreamSubscription<PlaybackState>? _playbackSubscription;
   StreamSubscription<Duration?>? _durationSubscription;
   Future<void> _queue = Future<void>.value();
 
-  /// 点灵动岛 / 锁屏卡片时把播放器推到前台。
+  /// 桌面 Widget / 旧播放器深链请求打开播放器。
   Future<void> Function()? onOpenPlayer;
 
   Future<void> initialize() async {
@@ -59,19 +54,11 @@ class LiveActivityService {
     await _ensureAvailable();
   }
 
-  /// 检查 iOS 是否可以接收实时活动或桌面小组件的播放状态。
-  ///
-  /// 刻意做成可以反复调用：用户可能先播放、才想起来去
-  /// 「设置 → 栖弦 → 实时活动」打开开关 —— 只在启动时检查一次的话，
-  /// 就得重启 App 才生效，表现成「灵动岛怎么都不出现」。
-/// 每次播放状态变化都会重试一次，代价只是一次轻量通道调用。
-  ///
-  /// [force] 用于「通知授权刚被回答」这种外部状态变化的场景：
-  /// 之前拿到过 false 而放弃了，必须强制重新判定一次。
-  Future<void> _ensureAvailable({bool force = false}) async {
+  /// 仅检查桌面 Widget 共享同步能力，与 ActivityKit 和通知授权无关。
+  Future<void> _ensureAvailable() async {
     if (kIsWeb ||
         defaultTargetPlatform != TargetPlatform.iOS ||
-        (_available && !force) ||
+        _available ||
         _checking) {
       return;
     }
@@ -81,20 +68,22 @@ class LiveActivityService {
           await _channel.invokeMethod<bool>('isSupported') ?? false;
       if (!supported) {
         await AppLogger.write(
-          'live-activity',
-          '实时活动已关闭，且桌面小组件共享容器不可用；将在播放状态变化时重试',
+          'widget-sync',
+          '自定义播放活动已禁用；Widget 共享容器不可用，将在播放状态变化时重试',
         );
         _available = false;
         return;
       }
       _available = true;
       _attachListeners();
-      await AppLogger.write('live-activity', '系统播放状态同步已就绪');
-    } on MissingPluginException {
+      await AppLogger.write('widget-sync', '自定义播放活动已禁用；Widget 状态与封面同步已就绪');
+      await _push();
+    } on MissingPluginException catch (error) {
       _available = false;
-    } catch (error) {
+      await AppLogger.write('widget-sync', '共享同步通道不可用: $error');
+    } catch (error, stackTrace) {
       _available = false;
-      await AppLogger.write('live-activity', '初始化失败: $error');
+      await AppLogger.write('widget-sync', '初始化失败: $error\n$stackTrace');
     } finally {
       _checking = false;
     }
@@ -106,42 +95,30 @@ class LiveActivityService {
     final handler = _ref.read(playerAudioHandlerProvider);
     // 播放传输走 playbackState，曲目变化走 playerController。
     _playbackSubscription = handler.playbackState.listen(_onPlaybackState);
-    // 时长通常比播放状态晚一步解析出来，进度条要靠这次更新才会出现。
+    // 保留时长解析后的状态同步。
     _durationSubscription = handler.durationStream.listen(
-      (_) => unawaited(_push(afterArtwork: false)),
+      (_) => unawaited(_push()),
     );
   }
 
   // MARK: - 原生回调
 
-Future<dynamic> _handleNativeCall(MethodCall call) async {
+  Future<dynamic> _handleNativeCall(MethodCall call) async {
     switch (call.method) {
       case 'control':
         final action = call.arguments as String? ?? '';
-        // 串行化，避免连点灵动岛按钮时互相打断。
+        // 串行化，避免重复深链控制时互相打断。
         _queue = _queue
             .then((_) => _control(action))
             .catchError((Object error) async {
-              await AppLogger.write('live-activity', 'control 失败: $error');
+              await AppLogger.write('widget-sync', 'control 失败: $error');
             });
         return true;
       case 'openPlayer':
         await onOpenPlayer?.call();
         return true;
-      case 'authorizationResolved':
-        // 原生的通知授权弹窗刚被回答。此刻 areActivitiesEnabled 才翻成 true，
-        // 立刻重新判定一次并把当前曲目推上去 —— 否则要等下一次播放状态变化
-        // 才恢复，表现为「授权完了还是没反应，再播一次才有」。
-        await _ensureAvailable(force: true);
-        final state = _ref.read(playerControllerProvider);
-        if (state.track != null) {
-          _activeStarted = false;
-          _lastSignature = null;
-          await _push(afterArtwork: true);
-        }
-        return true;
     }
-    throw MissingPluginException('未知的实时活动方法: ${call.method}');
+    throw MissingPluginException('未知的 Widget 同步方法: ${call.method}');
   }
 
   Future<void> _control(String action) async {
@@ -160,15 +137,17 @@ Future<dynamic> _handleNativeCall(MethodCall call) async {
       case 'next':
         await player.playNext();
     }
-    await AppLogger.write('live-activity', '控制: $action');
+    await AppLogger.write('widget-sync', '控制: $action');
   }
 
   // MARK: - 状态推送
 
   /// 曲目变化（可能是换歌，也可能是首次播放）。
   void publish(PlayerState state) {
+    // 使用监听提供的快照，避免在 provider 通知/构建期间重读它。
+    _playerState = state;
     if (!_available) {
-      // 可能只是「实时活动开关后来才打开」，重试一次而不是永远放弃。
+      // 共享容器暂不可用时，在后续状态变化重试。
       unawaited(_ensureAvailable());
       return;
     }
@@ -177,9 +156,7 @@ Future<dynamic> _handleNativeCall(MethodCall call) async {
       _end();
       return;
     }
-    final changed = track.id != _activeTrackId;
-    _activeTrackId = track.id;
-    unawaited(_push(afterArtwork: changed));
+    unawaited(_push());
   }
 
   void _onPlaybackState(PlaybackState state) {
@@ -187,8 +164,7 @@ Future<dynamic> _handleNativeCall(MethodCall call) async {
       unawaited(_ensureAvailable());
       return;
     }
-    final playerState = _ref.read(playerControllerProvider);
-    if (playerState.track == null) {
+    if (_playerState.track == null) {
       _end();
       return;
     }
@@ -196,24 +172,19 @@ Future<dynamic> _handleNativeCall(MethodCall call) async {
     final stopped =
         processing == AudioProcessingState.idle ||
         processing == AudioProcessingState.error;
-    // 注意：completed 不停活动 —— 下一首马上会接着 start，
-    // 停掉再建会让灵动岛闪一下。
+    // 停止只标记 Widget 未播放，保留上一曲标题与封面。
     if (stopped && !state.playing) {
       _end();
       return;
     }
-    unawaited(_push(afterArtwork: false));
+    unawaited(_push());
   }
 
-  /// 计算要推给原生的载荷。
-  ///
-  /// 返回 null 表示这次没有实质变化（比如进度回调），可以跳过，
-  /// 避免把通道刷爆。
+  /// 计算要推给桌面 Widget 的载荷；没有当前曲目时返回 null。
   Map<String, dynamic>? _payload() {
     final audioHandler = _ref.read(playerAudioHandlerProvider);
     final playback = audioHandler.playbackState.value;
-    final state = _ref.read(playerControllerProvider);
-    final track = state.track;
+    final track = _playerState.track;
     if (track == null) return null;
 
     final playing =
@@ -252,64 +223,69 @@ Future<dynamic> _handleNativeCall(MethodCall call) async {
     };
   }
 
-  Future<void> _push({required bool afterArtwork}) async {
+  Future<void> _push() async {
     if (!_available) return;
-    final payload = _payload();
-    if (payload == null) return;
-
-    // 只有「换歌 / 播放状态变化 / 明显跳转」才值得推一次更新。
-    // 位置量化到 5 秒，避免连续微调把通道刷爆；seek 会直接改变量化后的值。
-    final signature = [
-      payload['trackId'],
-      payload['playing'],
-      (payload['positionMs'] as int) ~/ 5000,
-      payload['durationMs'],
-    ].join('|');
-    // 首帧（换歌）必须推一次，哪怕签名"看起来"没变。
-    if (!afterArtwork && _activeStarted && signature == _lastSignature) return;
-    _lastSignature = signature;
-
+    final revision = ++_revision;
     try {
-      final method = _activeStarted ? 'update' : 'start';
-      await _channel.invokeMethod<dynamic>(method, {
-        ...payload,
-        ...await _coverPayload(),
-      });
-      _activeStarted = true;
+      final payload = _payload();
+      if (payload == null) return;
+      final track = _playerState.track!;
+      payload.addAll(await _coverPayload(track));
+      // 换歌/停止发生在封面缓存期间时，丢弃过期载荷。
+      if (revision != _revision) return;
+      final signature = jsonEncode([
+        payload['trackId'],
+        payload['title'],
+        payload['artist'],
+        payload['cover'],
+        payload['headers'],
+        payload['playing'],
+        (payload['positionMs'] as int) ~/ 5000,
+        payload['durationMs'],
+      ]);
+      if (_widgetSynced && signature == _lastSignature) return;
+      // 兼容旧原生方法名；二者现在都只写桌面 Widget 共享状态。
+      final method = _widgetSynced ? 'update' : 'start';
+      // 发送后立即记录，停止若在原生回复前到达也必须发送 end。
+      _lastSignature = signature;
+      _widgetSynced = true;
+      await _channel.invokeMethod<dynamic>(method, payload);
     } on MissingPluginException {
       _available = false;
     } catch (error) {
-      await AppLogger.write('live-activity', '推送失败: $error');
+      if (revision == _revision) _lastSignature = null;
+      await AppLogger.write('widget-sync', '同步失败: $error');
     }
   }
 
-  bool _activeStarted = false;
+  bool _widgetSynced = false;
 
-  Future<Map<String, dynamic>> _coverPayload() async {
+  Future<Map<String, dynamic>> _coverPayload(PlayerTrack track) async {
     try {
-      final track = _ref.read(playerControllerProvider).track;
       final embedded = await _ref
           .read(playerAudioHandlerProvider)
-          .cacheArtwork(track?.coverBytes);
+          .cacheArtwork(track.coverBytes);
       final cover =
           embedded?.toString() ??
-          CoverImageSource.normalizeUrl(track?.coverUrl, size: 512) ??
+          CoverImageSource.normalizeUrl(track.coverUrl, size: 512) ??
           '';
       return {'cover': cover, 'headers': CoverImageSource.headersFor(cover) ?? {}};
     } catch (error) {
-      await AppLogger.write('live-activity', '封面处理失败: $error');
+      await AppLogger.write('widget-sync', '封面处理失败: $error');
       return {'cover': '', 'headers': <String, String>{}};
     }
   }
 
   void _end() {
-    if (!_available || !_activeStarted) return;
-    _activeStarted = false;
-    _activeTrackId = null;
+    ++_revision;
+    if (!_available) return;
+    final hadState = _widgetSynced;
+    _widgetSynced = false;
     _lastSignature = null;
+    if (!hadState) return;
     unawaited(
       _channel.invokeMethod<void>('end').catchError((Object error) async {
-        await AppLogger.write('live-activity', '结束活动失败: $error');
+        await AppLogger.write('widget-sync', '标记 Widget 停止失败: $error');
       }),
     );
   }

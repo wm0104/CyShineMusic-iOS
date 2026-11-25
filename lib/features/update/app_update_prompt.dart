@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -5,6 +6,7 @@ import '../../core/app_info.dart';
 import '../../core/services/app_logger.dart';
 import '../../core/services/app_update_service.dart';
 import '../../core/ui/app_toast.dart';
+import 'app_update_controller.dart';
 
 enum AppUpdateCheckOutcome {
   updateAvailable,
@@ -20,6 +22,20 @@ Future<AppUpdateCheckOutcome> checkForAppUpdate(
   WidgetRef ref, {
   bool showFeedback = false,
 }) async {
+  if (defaultTargetPlatform == TargetPlatform.iOS) {
+    final controller = ref.read(appUpdateControllerProvider);
+    final result = await controller.check(automatic: !showFeedback);
+    if (showFeedback && context.mounted && controller.message != null) {
+      showAppToast(context, controller.message!,
+        type: result == UpdateCheckResult.failed ? AppToastType.warning : AppToastType.info);
+    }
+    return switch (result) {
+      UpdateCheckResult.updateAvailable => AppUpdateCheckOutcome.updateAvailable,
+      UpdateCheckResult.upToDate => AppUpdateCheckOutcome.upToDate,
+      UpdateCheckResult.alreadyChecking || UpdateCheckResult.skipped => AppUpdateCheckOutcome.alreadyChecking,
+      UpdateCheckResult.failed => AppUpdateCheckOutcome.failed,
+    };
+  }
   if (_appUpdateCheckInProgress) {
     if (showFeedback && context.mounted) {
       showAppToast(context, '正在检查更新，请稍候');

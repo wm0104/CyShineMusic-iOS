@@ -122,7 +122,7 @@ void main() {
     expect(item?.artHeaders, contains('User-Agent'));
   });
 
-  test('Live Activity restarts remote tracks using the previous lifecycle', () async {
+  test('iOS Widget sync follows play, pause, track switch and stop', () async {
     debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
     const channel = MethodChannel('cy_shine_music/live_activity');
@@ -140,6 +140,11 @@ void main() {
     await harness.container.read(liveActivityProvider).initialize();
     harness.container.read(liveActivitySyncProvider);
     await harness.controller.playFromMusic(_music());
+    expect(
+      harness.audio.playbackState.value.processingState,
+      AudioProcessingState.ready,
+      reason: 'queue metadata must not replay idle and cancel the first Widget sync',
+    );
     await _waitUntil(() => calls.isNotEmpty);
     await Future<void>.delayed(Duration.zero);
     expect(calls.first.method, 'start');
@@ -162,9 +167,10 @@ void main() {
     expect(calls.last.method, 'update');
     expect(calls.last.arguments, containsPair('playing', false));
 
-    // Restore the previous lifecycle: end during the remote-track gap,
-    // then start a new activity when the next track becomes available.
+    // The legacy end/start methods now only mark the Widget stopped and
+    // synchronize the next track; they do not represent ActivityKit activity.
     final loadGate = Completer<void>();
+    harness.api.coverUrl = 'http://p1.music.126.net/test/cover.jpg';
     harness.audio.loadGate = loadGate;
     final switching = harness.controller.playFromMusic(_neteaseMusic());
     await _waitUntil(() => harness.audio.loadedUris.length == 2);
@@ -182,15 +188,115 @@ void main() {
     await switching;
     harness.audio.playbackState.add(playing);
     await _waitUntil(
-      () => calls.last.arguments is Map &&
+      () => calls.isNotEmpty && calls.last.arguments is Map &&
           calls.last.arguments['title'] == 'NetEase Song' &&
           calls.last.arguments['playing'] == true,
     );
     expect(calls.first.method, 'start');
     expect(calls.first.arguments, containsPair('title', 'NetEase Song'));
+    expect(calls.first.arguments, containsPair(
+      'cover', 'https://p1.music.126.net/test/cover.jpg?param=512y512',
+    ));
+    expect(calls.first.arguments['headers'],
+        containsPair('Referer', 'https://music.163.com/'));
 
     harness.audio.playbackState.add(PlaybackState());
     await _waitUntil(() => calls.last.method == 'end');
+    // No metadata-clearing payload: native end keeps the last title/cover.
+    expect(calls.last.arguments, isNull);
+    final stoppedCount = calls.length;
+    harness.audio.playbackState.add(PlaybackState());
+    await Future<void>.delayed(Duration.zero);
+    expect(calls, hasLength(stoppedCount));
+
+    harness.audio.playbackState.add(playing);
+    await _waitUntil(() => calls.length > stoppedCount);
+    expect(calls.last.method, 'start');
+    expect(calls.last.arguments, containsPair('title', 'NetEase Song'));
+    expect(calls.last.arguments, containsPair('playing', true));
+  });
+
+  test('iOS Widget sync publishes changed cover for the same track', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    const channel = MethodChannel('cy_shine_music/live_activity');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method != 'isSupported') calls.add(call);
+      return call.method == 'end' ? null : true;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final harness = await _Harness.create(loadFailures: 0);
+    addTearDown(harness.dispose);
+    final service = harness.container.read(liveActivityProvider);
+    await harness.container.read(liveActivityProvider).initialize();
+    harness.container.read(liveActivitySyncProvider);
+    await harness.controller.playFromMusic(_music());
+    expect(
+      harness.audio.playbackState.value.processingState,
+      AudioProcessingState.ready,
+      reason: 'queue metadata must not replay idle and cancel the first Widget sync',
+    );
+    await _waitUntil(() => calls.isNotEmpty);
+    harness.audio.playbackState.add(PlaybackState(
+      processingState: AudioProcessingState.ready,
+    ));
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    final trackId = calls.last.arguments['trackId'];
+    calls.clear();
+
+    harness.api.coverUrl = 'https://art.test/new-cover.jpg';
+    expect(await harness.controller.switchQuality(Quality.k320), isTrue);
+    await _waitUntil(() => calls.any((call) =>
+        call.arguments is Map &&
+        call.arguments['cover'] == 'https://art.test/new-cover.jpg'));
+    expect(calls.last.method, 'update');
+    expect(calls.last.arguments, containsPair('trackId', trackId));
+    expect(calls.last.arguments, containsPair('title', 'Test Song'));
+    expect(calls.last.arguments, containsPair('playing', false));
+
+    final count = calls.length;
+    service.publish(harness.container.read(playerControllerProvider));
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(calls, hasLength(count), reason: 'unchanged metadata is deduplicated');
+  });
+
+  test('iOS Widget stop wins while native sync reply is pending', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    const channel = MethodChannel('cy_shine_music/live_activity');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final reply = Completer<bool>();
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'isSupported') return true;
+      calls.add(call);
+      if (call.method == 'start') return reply.future;
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final harness = await _Harness.create(loadFailures: 0);
+    addTearDown(harness.dispose);
+    await harness.container.read(liveActivityProvider).initialize();
+    harness.container.read(liveActivitySyncProvider);
+    await harness.controller.playFromMusic(_music());
+    expect(
+      harness.audio.playbackState.value.processingState,
+      AudioProcessingState.ready,
+      reason: 'queue metadata must not replay idle and cancel the first Widget sync',
+    );
+    await _waitUntil(() => calls.isNotEmpty);
+    expect(calls.first.method, 'start');
+
+    harness.audio.playbackState.add(PlaybackState());
+    await _waitUntil(() => calls.last.method == 'end');
+    reply.complete(true);
+    await Future<void>.delayed(Duration.zero);
+    expect(calls.last.method, 'end');
+    expect(calls.where((call) => call.method == 'end'), hasLength(1));
   });
 
   test('all source load failures publish only the final error state', () async {
@@ -783,9 +889,21 @@ class _FakeAudioHandler extends PlayerAudioHandler {
 
   @override
   void publishQueue(List<MediaItem> items, {int? currentIndex}) {
-    // The test transport drives playbackState directly, without a BASS engine.
+    // Queue updates must preserve the fake transport's actual state, not
+    // rebroadcast the BaseAudioHandler's initial idle state after load().
     queue.add(items);
-    playbackState.add(playbackState.value.copyWith(queueIndex: currentIndex));
+    playbackState.add(playbackState.value.copyWith(
+      queueIndex: currentIndex,
+      playing: _playing,
+      processingState: switch (_processingState) {
+        bass.BassProcessingState.idle => AudioProcessingState.idle,
+        bass.BassProcessingState.loading => AudioProcessingState.loading,
+        bass.BassProcessingState.buffering => AudioProcessingState.buffering,
+        bass.BassProcessingState.ready => AudioProcessingState.ready,
+        bass.BassProcessingState.completed => AudioProcessingState.completed,
+        bass.BassProcessingState.error => AudioProcessingState.error,
+      },
+    ));
   }
 
   @override
@@ -871,6 +989,7 @@ class _FakeAudioHandler extends PlayerAudioHandler {
 
 class _FakeMusicApi extends MusicApi {
   int lyricLoadCount = 0;
+  String? coverUrl;
 
   @override
   Future<LyricInfo> getLyric({required MusicInfo musicInfo}) async {
@@ -882,7 +1001,7 @@ class _FakeMusicApi extends MusicApi {
   Future<String?> getPicUrl({
     required MusicInfo musicInfo,
     bool preferCached = true,
-  }) async => null;
+  }) async => coverUrl;
 }
 
 Future<void> _waitUntil(bool Function() predicate) async {
@@ -890,7 +1009,10 @@ Future<void> _waitUntil(bool Function() predicate) async {
     if (predicate()) return;
     await Future<void>.delayed(const Duration(milliseconds: 10));
   }
-  fail('condition was not reached');
+  final widgetLogs = AppLogger.recentMemoryLines
+      .where((line) => line.contains('[widget-sync]'))
+      .join('\n');
+  fail('condition was not reached; Widget diagnostics:\n$widgetLogs');
 }
 
 MusicSourceRecord _record(String id) {

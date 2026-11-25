@@ -45,7 +45,7 @@ struct CyShineHomeProvider: TimelineProvider {
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<CyShineHomeEntry>) -> Void) {
-        // 主 App 每次状态变化都会 WidgetCenter.reloadAllTimelines()，
+        // 主 App 每次状态变化都会 WidgetCenter.reloadTimelines(ofKind:)，
         // 这里的 15 分钟只是兜底刷新。
         let entry = Self.readEntry()
         let next = Date().addingTimeInterval(15 * 60)

@@ -36,6 +36,8 @@ jobs:
         with:
           ref: ${{ github.event.inputs.ref || github.sha }}
 
+      - run: python3 -B -m unittest discover -s tool -p test_ios_update_manifest.py -v
+
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -74,10 +76,8 @@ jobs:
       - name: Verify preload protocol & call order
         run: node tool/verify_preload_protocol.mjs
 
-      # 实时活动的授权链路曾经死锁过一次（ios-v2.0.1：灵动岛永远不出现）。
-      # 根因是「问通知权限」只写在 start 里，而 Dart 在 isSupported 为 false 时
-      # 压根不会调 start。这条检查把该约束变成硬校验。
-      - name: Verify live activity authorization chain
+      # 自定义播放实时活动已停用：保留旧活动清理和桌面 Widget 同步。
+      - name: Verify widget playback bridge
         run: node tool/verify_live_activity_auth.mjs
 
       # Swift 只能靠 macOS runner 编译（一次 ~10 分钟）。这条检查在编译之前
@@ -117,6 +117,11 @@ jobs:
 
       - name: Analyze
         run: flutter analyze --no-fatal-infos
+
+      - name: Update and widget regression tests
+        run: >-
+          flutter test --timeout 2m test/app_update*_test.dart
+          test/player_source_fallback_test.dart test/player_audio_handler_test.dart
 
       - name: Unit tests
         # 上游测试里有若干依赖真机/网络的诊断用例，失败不阻断出包。

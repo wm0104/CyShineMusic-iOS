@@ -54,16 +54,14 @@ class AppLogger {
       'start session=$sessionId environment=$_environment',
     );
     await logAndroidDiagnostics('startup');
-    // 启动就采一次：灵动岛不显示时，用户打开日志页第一屏就能看到
-    // 「扩展到底有没有被系统加载」，不必先播歌再切后台。
+    // 启动时记录桌面 Widget 包与用户配置情况，不推断系统媒体岛状态。
     await logIosWidgetStatus('startup');
   }
 
   /// 方法名沿用上游（改名字会平添一处 rebase 冲突），但两端都跑：
   /// 原生 `cy_shine_music/app_task.diagnostics` 在 Android 与 iOS 上都已经实现，
   /// 上游只是没给 iOS 开门。放开后日志页能直接看到
-  /// 机型 / 系统版本 / 通知开关 / 低电量模式 —— 排查「灵动岛为什么不显示」时，
-  /// 「通知开关」这一项尤其关键（见 CyShineLiveActivityBridge 的说明）。
+  /// 机型 / 系统版本 / 低电量模式等运行环境；通知开关不决定系统媒体岛。
   static Future<void> logAndroidDiagnostics(String reason) async {
     final scope = Platform.isAndroid
         ? 'android-runtime'
@@ -89,7 +87,7 @@ class AppLogger {
 
   /// ★ 锁屏 / 控制中心播放卡片的诊断（仅 iOS）。
   ///
-  /// 这条链路与灵动岛**无关**：卡片由 `MPNowPlayingInfoCenter` 驱动，
+  /// 系统媒体岛与锁屏卡片由 audio_service 写入 `MPNowPlayingInfoCenter` 驱动，
   /// 系统自己画，不需要 ActivityKit 或 Widget 扩展。查「锁屏没有播放卡片」时
   /// 看这一行就够了 —— 它直接把 nowPlayingInfo 是否为空、封面有没有、
   /// 后台音频有没有声明都列出来了。
@@ -109,15 +107,7 @@ class AppLogger {
     }
   }
 
-  /// ★ 判断「Widget 扩展有没有被系统加载」（仅 iOS）。
-  ///
-  /// 这是灵动岛不显示时**最关键**的一个判据。`.appex` 文件在不在包里，
-  /// 与 iOS 有没有加载它是两件事 —— 侧载重签若没给嵌套的 `.appex` 单独签名，
-  /// 文件还在、系统却不加载，此时 `Activity.request` 照样成功返回，
-  /// 但屏幕上什么都不出现。
-  ///
-  /// 判据：`extensionLoaded=false` ⇒ 扩展没被加载，问题在签名/安装方式，
-  /// 不在 ActivityKit 代码。
+  /// 记录桌面 Widget 包与配置查询结果；空列表不是扩展加载/签名失败证据。
   static Future<void> logIosWidgetStatus(String reason) async {
     if (!Platform.isIOS) return;
     try {
@@ -128,16 +118,16 @@ class AppLogger {
         await write('widget-status', 'reason=$reason 无返回');
         return;
       }
-      final loaded = data['extensionLoaded'] == true;
       final onDisk = data['extensionOnDisk'] == true;
       final kinds = (data['widgetKinds'] as List?)?.join(',') ?? '—';
       await write(
         'widget-status',
         'reason=$reason 扩展${onDisk ? "在包内" : "缺失"} '
-            '系统加载=${loaded ? "是" : "否⚠"} '
+            '配置查询=${data["configurationQuerySucceeded"] == true ? "成功" : "未知"} '
             '小组件数=${data['widgetConfigCount'] ?? '?'} kinds=$kinds '
             '活动数=${data['activityCount'] ?? '?'} '
-            '实时活动开关=${data['liveActivitiesEnabled'] ?? '?'} '
+            '自定义播放活动=已禁用 '
+            'Widget共享容器=${data['widgetSharedContainerAvailable'] ?? '?'} '
             '| ${data['verdict'] ?? ''}',
       );
     } catch (error) {

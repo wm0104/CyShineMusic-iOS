@@ -28,6 +28,7 @@ import 'features/player/music_home_widget_service.dart';
 import 'features/songs/local_song_scan_cache.dart';
 import 'features/startup/startup_gate.dart';
 import 'features/update/app_update_prompt.dart';
+import 'features/update/app_update_controller.dart';
 import 'router.dart';
 import 'theme/app_motion.dart';
 import 'theme/app_theme.dart';
@@ -87,8 +88,8 @@ class _CyShineMusicAppState extends ConsumerState<CyShineMusicApp>
         await _openPendingExternalAudio();
       });
     }
-    // iOS 的灵动岛 / 锁屏实时活动。真正的推流由 liveActivitySyncProvider
-    // 在首帧之后激活（与桌面小组件同一套节奏）。
+    // iOS 桌面 Widget 同步沿用 liveActivitySyncProvider 名称，
+    // 与 Android 桌面小组件一样在首帧之后激活。
     if (Platform.isIOS) {
       final liveActivity = ref.read(liveActivityProvider);
       liveActivity.onOpenPlayer = _openLiveActivityPlayer;
@@ -131,6 +132,9 @@ class _CyShineMusicAppState extends ConsumerState<CyShineMusicApp>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state != AppLifecycleState.resumed || !mounted) return;
     unawaited(ref.read(webDavSyncControllerProvider.notifier).onAppResumed());
+    if (Platform.isIOS && _externalAudioReady) {
+      unawaited(ref.read(appUpdateControllerProvider).check(automatic: true));
+    }
   }
 
   Future<void> _onStartupReady() async {
@@ -138,12 +142,15 @@ class _CyShineMusicAppState extends ConsumerState<CyShineMusicApp>
       _externalAudioReady = true;
       await _openPendingExternalAudio();
       await _openWidgetPlayer();
+      if (Platform.isIOS && mounted) {
+        unawaited(ref.read(appUpdateControllerProvider).check(automatic: true));
+      }
       if (!mounted || _openedExternalAudio) return;
       final canCheckForUpdate = await _checkPermission();
       if (!canCheckForUpdate) return;
       final context = rootNavigatorKey.currentContext;
       if (context == null || !context.mounted) return;
-      await checkForAppUpdate(context, ref);
+      if (!Platform.isIOS) await checkForAppUpdate(context, ref);
     } finally {
       if (mounted) setState(() => _sourceUpdatePromptsReady = true);
     }
@@ -158,7 +165,7 @@ class _CyShineMusicAppState extends ConsumerState<CyShineMusicApp>
     }
   }
 
-  /// 点灵动岛 / 锁屏实时活动卡片时把播放器推到前台。
+  /// 点 iOS 桌面 Widget 时把播放器推到前台（保留既有回调名称）。
   Future<void> _openLiveActivityPlayer() async {
     if (!mounted) return;
     final location = appRouter.routeInformationProvider.value.uri;
