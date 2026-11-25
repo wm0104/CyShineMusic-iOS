@@ -369,11 +369,18 @@ class _SongsPageState extends ConsumerState<SongsPage> {
     final tracksByEntryId = <String, PlaylistTrack>{};
     for (final track in playlist.tracks) {
       final localEntry = localIndex.resolve(track, playlist.id);
+      final entryId = 'playlist:${playlist.id}:${track.identityKey}';
+      final queueEntry = track.spotify != null && localEntry != null
+          ? DownloadHistoryEntry.fromJson({
+              ...localEntry.toJson(),
+              'id': entryId,
+              'preservePlaylistPosition': true,
+            })
+          : localEntry ?? track.toQueueEntry(playlistId: playlist.id);
       final entry =
-          localEntry ??
-          track.toQueueEntry(playlistId: playlist.id) ??
+          queueEntry ??
           DownloadHistoryEntry(
-            id: 'playlist:${playlist.id}:${track.identityKey}',
+            id: entryId,
             musicId: track.musicId,
             name: track.name,
             singer: track.singer,
@@ -672,14 +679,7 @@ class _SongsPageState extends ConsumerState<SongsPage> {
     LocalPlaylist playlist,
     List<DownloadHistoryEntry> songs,
   ) async {
-    final selectedEntries = songs
-        .where((entry) => _selectedIds.contains(entry.id))
-        .toList(growable: false);
-    final trackIds = <String>{};
-    for (final entry in selectedEntries) {
-      final track = _visiblePlaylistTracks[entry.id];
-      if (track != null) trackIds.add(track.id);
-    }
+    final trackIds = _selectedPlaylistTrackIds(songs);
     if (trackIds.isEmpty) {
       showAppToast(context, '请先选择要移出的歌曲', type: AppToastType.warning);
       return;
@@ -693,6 +693,30 @@ class _SongsPageState extends ConsumerState<SongsPage> {
       _batchMode = false;
     });
     showAppToast(context, '已从歌单移出 $removed 首歌曲', type: AppToastType.success);
+  }
+
+  List<String> _selectedPlaylistTrackIds(List<DownloadHistoryEntry> songs) => [
+    for (final entry in songs)
+      if (_selectedIds.contains(entry.id))
+        if (_visiblePlaylistTracks[entry.id] case final track?) track.id,
+  ];
+
+  Future<void> _transferPlaylistTracks(
+    LocalPlaylist playlist,
+    Iterable<String> trackIds, {
+    required bool move,
+    bool batch = false,
+  }) async {
+    if (!mounted) return;
+    final count = await transferTracksToChosenPlaylist(
+      context,
+      ref,
+      fromPlaylistId: playlist.id,
+      trackIds: trackIds,
+      move: move,
+    );
+    if (!mounted || count == 0 || !batch) return;
+    _setBatchMode(false);
   }
 
   Future<void> _deleteSongData(DownloadHistoryEntry entry) async {
@@ -1047,6 +1071,7 @@ class _SongsPageState extends ConsumerState<SongsPage> {
       }
     }
     final playlistMode = selectedPlaylist != null;
+    final canTransfer = playlistMode && playlists.length > 1;
     final history = ref.watch(downloadHistoryProvider);
     final playlistSongs = selectedPlaylist == null
         ? null
@@ -1160,6 +1185,7 @@ class _SongsPageState extends ConsumerState<SongsPage> {
                   separatorBuilder: (_, _) => const SongListDivider(),
                   itemBuilder: (context, index) {
                     final entry = songs[index];
+                    final track = _visiblePlaylistTracks[entry.id];
                     final path = entry.savedPath;
                     final playing = _matchesPlayingEntry(
                       entry,
@@ -1178,12 +1204,27 @@ class _SongsPageState extends ConsumerState<SongsPage> {
                       selected: _selectedIds.contains(entry.id),
                       onToggleSelected: () => _toggleSelection(entry),
                       onAddNext: () => _addNext(entry),
-                      onAddToPlaylist: () =>
-                          unawaited(_selectPlaylistForSong(entry)),
+                      onAddToPlaylist: playlistMode
+                          ? () {
+                              if (track != null) {
+                                unawaited(
+                                  _transferPlaylistTracks(selectedPlaylist!, [
+                                    track.id,
+                                  ], move: false),
+                                );
+                              }
+                            }
+                          : () => unawaited(_selectPlaylistForSong(entry)),
+                      onMoveToPlaylist: canTransfer && track != null
+                          ? () => unawaited(
+                              _transferPlaylistTracks(selectedPlaylist!, [
+                                track.id,
+                              ], move: true),
+                            )
+                          : null,
                       onPlay: () => _play(entry, songs),
                       onDelete: playlistMode
                           ? () {
-                              final track = _visiblePlaylistTracks[entry.id];
                               if (track != null) {
                                 unawaited(
                                   _removePlaylistTrack(
@@ -1216,13 +1257,35 @@ class _SongsPageState extends ConsumerState<SongsPage> {
                       _removeSelectedFromPlaylist(selectedPlaylist!, songs),
                     )
                   : () => unawaited(_confirmDeleteSelected(songs)),
-              onAddToPlaylist: playlistMode || selectedCount == 0
+              onAddToPlaylist: selectedCount == 0
                   ? null
-                  : () => unawaited(_addSelectedToPlaylist(songs)),
+                  : !playlistMode
+                  ? () => unawaited(_addSelectedToPlaylist(songs))
+                  : canTransfer
+                  ? () => unawaited(
+                      _transferPlaylistTracks(
+                        selectedPlaylist!,
+                        _selectedPlaylistTrackIds(songs),
+                        move: false,
+                        batch: true,
+                      ),
+                    )
+                  : null,
+              onMoveToPlaylist: canTransfer && selectedCount > 0
+                  ? () => unawaited(
+                      _transferPlaylistTracks(
+                        selectedPlaylist!,
+                        _selectedPlaylistTrackIds(songs),
+                        move: true,
+                        batch: true,
+                      ),
+                    )
+                  : null,
               onPlaySelected: selectedCount == 0
                   ? null
                   : () => unawaited(_playSelected(songs)),
               playlistMode: playlistMode,
+              showPlaylistTransfers: canTransfer,
             )
           : null,
       body: _batchMode || playlistMode

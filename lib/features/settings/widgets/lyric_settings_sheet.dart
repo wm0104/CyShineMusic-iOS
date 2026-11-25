@@ -4,16 +4,25 @@ import 'package:flutter/services.dart';
 import '../../../core/storage/settings_store.dart';
 import '../../player/widgets/player_palette.dart';
 
-Future<({double weight, double size, double translationSize})>
+Future<
+  ({
+    double weight,
+    double size,
+    double translationWeight,
+    double translationSize,
+  })
+>
 showLyricSettingsSheet(
   BuildContext context, {
   required double weight,
   required double size,
+  required double translationWeight,
   required double translationSize,
 }) async {
   var selected = (
     weight: normalizeLyricFontWeight(weight),
     size: normalizeLyricFontSize(size),
+    translationWeight: normalizeLyricFontWeight(translationWeight),
     translationSize: normalizeLyricTranslationFontSize(translationSize),
   );
   await showModalBottomSheet<void>(
@@ -24,6 +33,7 @@ showLyricSettingsSheet(
     builder: (_) => _LyricSettingsSheet(
       weight: selected.weight,
       size: selected.size,
+      translationWeight: selected.translationWeight,
       translationSize: selected.translationSize,
       onChanged: (value) => selected = value,
     ),
@@ -35,14 +45,23 @@ class _LyricSettingsSheet extends StatefulWidget {
   const _LyricSettingsSheet({
     required this.weight,
     required this.size,
+    required this.translationWeight,
     required this.translationSize,
     required this.onChanged,
   });
 
   final double weight;
   final double size;
+  final double translationWeight;
   final double translationSize;
-  final ValueChanged<({double weight, double size, double translationSize})>
+  final ValueChanged<
+    ({
+      double weight,
+      double size,
+      double translationWeight,
+      double translationSize,
+    })
+  >
   onChanged;
 
   @override
@@ -52,16 +71,26 @@ class _LyricSettingsSheet extends StatefulWidget {
 class _LyricSettingsSheetState extends State<_LyricSettingsSheet> {
   late double _weight = widget.weight;
   late double _size = widget.size;
+  late double _translationWeight = widget.translationWeight;
   late double _translationSize = widget.translationSize;
   final _weightKey = GlobalKey<_StyleControlState>();
   final _sizeKey = GlobalKey<_StyleControlState>();
+  final _translationWeightKey = GlobalKey<_StyleControlState>();
   final _translationSizeKey = GlobalKey<_StyleControlState>();
 
-  void _update({double? weight, double? size, double? translationSize}) {
+  void _update({
+    double? weight,
+    double? size,
+    double? translationWeight,
+    double? translationSize,
+  }) {
     if (!mounted) return;
     setState(() {
       _weight = normalizeLyricFontWeight(weight ?? _weight);
       _size = normalizeLyricFontSize(size ?? _size);
+      _translationWeight = normalizeLyricFontWeight(
+        translationWeight ?? _translationWeight,
+      );
       _translationSize = normalizeLyricTranslationFontSize(
         translationSize ?? _translationSize,
       );
@@ -69,6 +98,7 @@ class _LyricSettingsSheetState extends State<_LyricSettingsSheet> {
     widget.onChanged((
       weight: _weight,
       size: _size,
+      translationWeight: _translationWeight,
       translationSize: _translationSize,
     ));
   }
@@ -76,12 +106,16 @@ class _LyricSettingsSheetState extends State<_LyricSettingsSheet> {
   void _reset() {
     _weightKey.currentState?.setValue(kLyricFontWeightDefault);
     _sizeKey.currentState?.setValue(kLyricFontSizeDefault);
+    _translationWeightKey.currentState?.setValue(
+      kLyricTranslationFontWeightDefault,
+    );
     _translationSizeKey.currentState?.setValue(
       kLyricTranslationFontSizeDefault,
     );
     _update(
       weight: kLyricFontWeightDefault,
       size: kLyricFontSizeDefault,
+      translationWeight: kLyricTranslationFontWeightDefault,
       translationSize: kLyricTranslationFontSizeDefault,
     );
   }
@@ -89,6 +123,7 @@ class _LyricSettingsSheetState extends State<_LyricSettingsSheet> {
   void _finish() {
     _weightKey.currentState?.commitInput();
     _sizeKey.currentState?.commitInput();
+    _translationWeightKey.currentState?.commitInput();
     _translationSizeKey.currentState?.commitInput();
     FocusScope.of(context).unfocus();
     Navigator.of(context).pop();
@@ -102,7 +137,15 @@ class _LyricSettingsSheetState extends State<_LyricSettingsSheet> {
     final isDefault =
         _weight == kLyricFontWeightDefault &&
         _size == kLyricFontSizeDefault &&
+        _translationWeight == kLyricTranslationFontWeightDefault &&
         _translationSize == kLyricTranslationFontSizeDefault;
+    final controlDivider = Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: Divider(
+        height: 1,
+        color: scheme.outlineVariant.withValues(alpha: 0.4),
+      ),
+    );
     return AnimatedPadding(
       duration: const Duration(milliseconds: 160),
       curve: Curves.easeOutCubic,
@@ -156,6 +199,7 @@ class _LyricSettingsSheetState extends State<_LyricSettingsSheet> {
                       _LyricPreview(
                         weight: _weight,
                         size: _size,
+                        translationWeight: _translationWeight,
                         translationSize: _translationSize,
                       ),
                       const SizedBox(height: 18),
@@ -173,25 +217,6 @@ class _LyricSettingsSheetState extends State<_LyricSettingsSheet> {
                         child: Column(
                           children: [
                             _StyleControl(
-                              key: _weightKey,
-                              icon: Icons.format_bold_rounded,
-                              label: '字体粗细',
-                              value: _weight,
-                              min: kLyricFontWeightMin,
-                              max: kLyricFontWeightMax,
-                              step: 100,
-                              onChanged: (value) => _update(weight: value),
-                            ),
-                            Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 12),
-                              child: Divider(
-                                height: 1,
-                                color: scheme.outlineVariant.withValues(
-                                  alpha: 0.4,
-                                ),
-                              ),
-                            ),
-                            _StyleControl(
                               key: _sizeKey,
                               icon: Icons.format_size_rounded,
                               label: '原歌词大小',
@@ -201,15 +226,18 @@ class _LyricSettingsSheetState extends State<_LyricSettingsSheet> {
                               step: 1,
                               onChanged: (value) => _update(size: value),
                             ),
-                            Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 12),
-                              child: Divider(
-                                height: 1,
-                                color: scheme.outlineVariant.withValues(
-                                  alpha: 0.4,
-                                ),
-                              ),
+                            controlDivider,
+                            _StyleControl(
+                              key: _weightKey,
+                              icon: Icons.format_bold_rounded,
+                              label: '字体粗细',
+                              value: _weight,
+                              min: kLyricFontWeightMin,
+                              max: kLyricFontWeightMax,
+                              step: 100,
+                              onChanged: (value) => _update(weight: value),
                             ),
+                            controlDivider,
                             _StyleControl(
                               key: _translationSizeKey,
                               icon: Icons.format_size_rounded,
@@ -220,6 +248,18 @@ class _LyricSettingsSheetState extends State<_LyricSettingsSheet> {
                               step: 1,
                               onChanged: (value) =>
                                   _update(translationSize: value),
+                            ),
+                            controlDivider,
+                            _StyleControl(
+                              key: _translationWeightKey,
+                              icon: Icons.format_bold_rounded,
+                              label: '字体粗细',
+                              value: _translationWeight,
+                              min: kLyricFontWeightMin,
+                              max: kLyricFontWeightMax,
+                              step: 100,
+                              onChanged: (value) =>
+                                  _update(translationWeight: value),
                             ),
                           ],
                         ),
@@ -265,21 +305,19 @@ class _LyricPreview extends StatelessWidget {
   const _LyricPreview({
     required this.weight,
     required this.size,
+    required this.translationWeight,
     required this.translationSize,
   });
 
   final double weight;
   final double size;
+  final double translationWeight;
   final double translationSize;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final scaler = MediaQuery.textScalerOf(context);
-    final secondaryWeight = (weight - 100).clamp(
-      kLyricFontWeightMin,
-      kLyricFontWeightMax,
-    );
     final height =
         scaler.scale(kLyricFontSizeMax) * 1.2 +
         scaler.scale(kLyricTranslationFontSizeMax) * 1.3 +
@@ -345,8 +383,8 @@ class _LyricPreview extends StatelessWidget {
                     color: scheme.onSurface.withValues(alpha: 0.38),
                     fontFamilyFallback: kPlayerFontFallback,
                     fontSize: translationSize,
-                    fontWeight: FontWeight(secondaryWeight.round()),
-                    fontVariations: [FontVariation.weight(secondaryWeight)],
+                    fontWeight: FontWeight(translationWeight.round()),
+                    fontVariations: [FontVariation.weight(translationWeight)],
                     height: 1.3,
                   ),
                 ),

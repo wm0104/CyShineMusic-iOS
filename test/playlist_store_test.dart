@@ -14,6 +14,7 @@ import 'package:cy_shine_music/features/playlists/lx_playlist_import.dart';
 import 'package:cy_shine_music/features/playlists/online_playlist_updater.dart';
 import 'package:cy_shine_music/features/playlists/playlist_models.dart';
 import 'package:cy_shine_music/features/playlists/playlist_store.dart';
+import 'package:cy_shine_music/features/playlists/spotify_playlist_import.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -49,6 +50,479 @@ void main() {
       expect(notifier.create('夜间'), throwsA(isA<PlaylistStoreException>()));
       expect(notifier.create('   '), throwsA(isA<PlaylistStoreException>()));
     });
+
+    test('persists saved playlist order through reimport and sync', () async {
+      final notifier = container.read(localPlaylistsProvider.notifier);
+      final first = await notifier.create('第一张歌单');
+      const online = PlaylistInfo(
+        id: 'ordered-online',
+        name: '在线歌单',
+        source: MusicSource.wy,
+        coverUrl: 'https://example.com/cover.jpg',
+        tracks: [],
+      );
+      final imported = await notifier.importOnline(online);
+      final last = await notifier.create('最后一张歌单');
+      final order = [last.id, imported.id, first.id];
+
+      await notifier.setPlaylistOrder(order);
+      expect(notifier.byId(imported.id), same(imported));
+      await expectLater(
+        notifier.setPlaylistOrder([last.id, last.id, imported.id]),
+        throwsA(isA<PlaylistStoreException>()),
+      );
+      await notifier.importOnline(online, synchronizeTracks: true);
+      final created = await notifier.create('新增歌单');
+      final expected = [...order, created.id];
+      final synced = notifier.exportForSync();
+      expect(synced.map((playlist) => playlist['id']), expected);
+
+      container.dispose();
+      container = _containerWith(prefs);
+      expect(container.read(localPlaylistsProvider).map((p) => p.id), expected);
+      final restored = container.read(localPlaylistsProvider.notifier);
+      await restored.applyFromSync(synced);
+      expect(container.read(localPlaylistsProvider).map((p) => p.id), expected);
+      expect(restored.byId(imported.id)!.coverUrl, online.coverUrl);
+    });
+
+    test(
+      'transfers resource snapshots without replacing equivalent songs',
+      () async {
+        final notifier = container.read(localPlaylistsProvider.notifier);
+        final exact = _music('same', '目标原标签', source: MusicSource.tx);
+        final alternate = _music('same', '不同音源', source: MusicSource.kg);
+        final duplicate = _spotifyTrack('duplicate', exact);
+        final otherVersion = _spotifyTrack('alternative', alternate).copyWith(
+          localPath: r'D:\Music\other.flac',
+          qualityCode: Quality.flac.code,
+        );
+        final placeholder = _spotifyTrack('pending');
+        final source = await notifier.importSpotify(
+          SpotifyPlaylistPreview(
+            id: 'spotify-source',
+            name: 'Spotify 歌单',
+            tracks: [duplicate, otherVersion, placeholder],
+            total: 3,
+          ),
+        );
+        final target = await notifier.create('目标歌单');
+        await notifier.addMusics(target.id, [
+          exact,
+          _music('existing', '现有歌曲'),
+        ]);
+        final initial = notifier.byId(target.id)!;
+        await notifier.setCustomTrackOrder(target.id, [
+          initial.tracks.last.id,
+          initial.tracks.first.id,
+        ]);
+        await notifier.setCustomTrackOrder(source.id, [
+          placeholder.id,
+          duplicate.id,
+          otherVersion.id,
+        ]);
+
+        final sourceBefore = notifier.byId(source.id);
+        expect(
+          await notifier.transferPlaylistTracks(
+            fromPlaylistId: source.id,
+            toPlaylistId: target.id,
+            trackIds: [
+              duplicate.id,
+              otherVersion.id,
+              placeholder.id,
+              placeholder.id,
+            ],
+            move: false,
+          ),
+          2,
+        );
+        expect(notifier.byId(source.id), same(sourceBefore));
+        final copied = notifier.byId(target.id)!;
+        expect(copied.customOrderedTracks, [
+          initial.tracks.last,
+          initial.tracks.first,
+          placeholder,
+          otherVersion,
+        ]);
+        expect(
+          await notifier.transferPlaylistTracks(
+            fromPlaylistId: source.id,
+            toPlaylistId: target.id,
+            trackIds: [duplicate.id],
+            move: true,
+          ),
+          1,
+        );
+        expect(notifier.byId(target.id), same(copied));
+        expect(notifier.byId(source.id)!.customOrderedTracks, [
+          placeholder,
+          otherVersion,
+        ]);
+        expect(
+          await notifier.setSpotifyTrackMatch(
+            target.id,
+            expected: placeholder,
+            music: _music('corrected', '补配歌曲'),
+          ),
+          isTrue,
+        );
+
+        container.dispose();
+        container = _containerWith(prefs);
+        final restored = container.read(localPlaylistsProvider.notifier);
+        final targetTracks = restored.byId(target.id)!.customOrderedTracks;
+        expect(targetTracks.last.toJson(), otherVersion.toJson());
+        expect(targetTracks[2].musicInfo?.id, 'corrected');
+        expect(restored.byId(source.id)!.tracks.map((t) => t.id), [
+          otherVersion.id,
+          placeholder.id,
+        ]);
+      },
+    );
+
+    test(
+      'same file aliases deduplicate scanned and downloaded tracks',
+      () async {
+        final store = container.read(localPlaylistsProvider.notifier);
+        final source = await store.create('下载收藏');
+        final target = await store.create('本地扫描');
+        await store.addEntry(
+          source.id,
+          _historyEntry(
+            id: 'download',
+            musicId: 'provider-id',
+            path: r'D:\Music\same.flac',
+            name: '下载标签',
+          ),
+        );
+        await store.addEntry(
+          target.id,
+          _historyEntry(
+            id: 'scanned-file',
+            musicId: 'scan-id',
+            path: 'D:/Music/same.flac',
+            name: '扫描标签',
+            source: MusicSource.all,
+          ),
+        );
+        final sourceTrack = store.byId(source.id)!.tracks.single;
+        final targetBefore = store.byId(target.id)!;
+
+        expect(
+          await store.transferPlaylistTracks(
+            fromPlaylistId: source.id,
+            toPlaylistId: target.id,
+            trackIds: [sourceTrack.id],
+            move: false,
+          ),
+          0,
+        );
+        expect(
+          await store.transferPlaylistTracks(
+            fromPlaylistId: source.id,
+            toPlaylistId: target.id,
+            trackIds: [sourceTrack.id],
+            move: true,
+          ),
+          1,
+        );
+        expect(store.byId(source.id)!.tracks, isEmpty);
+        expect(store.byId(target.id), same(targetBefore));
+      },
+    );
+
+    test(
+      'distinct matches for a Spotify occurrence survive transfer and refresh',
+      () async {
+        var store = container.read(localPlaylistsProvider.notifier);
+        final first = _spotifyTrack('same-origin', _music('first', '音源一'));
+        final second = _spotifyTrack(
+          'same-origin',
+          _music('second', '音源二', source: MusicSource.kg),
+        );
+        final firstPlaylist = await store.importSpotify(
+          SpotifyPlaylistPreview(
+            id: 'spotify-source-first',
+            name: 'Spotify 来源一',
+            tracks: [first],
+            total: 1,
+          ),
+        );
+        final secondPreview = SpotifyPlaylistPreview(
+          id: 'spotify-source-second',
+          name: 'Spotify 来源二',
+          tracks: [second],
+          total: 1,
+        );
+        final secondPlaylist = await store.importSpotify(secondPreview);
+        final movedTo = await store.create('移出目标');
+        final other = await store.create('临时歌单');
+        Future<int> transfer(
+          String from,
+          String to,
+          String trackId, {
+          bool move = true,
+        }) => store.transferPlaylistTracks(
+          fromPlaylistId: from,
+          toPlaylistId: to,
+          trackIds: [trackId],
+          move: move,
+        );
+
+        expect(first.id, second.id);
+        expect(
+          await transfer(
+            firstPlaylist.id,
+            secondPlaylist.id,
+            first.id,
+            move: false,
+          ),
+          1,
+        );
+        final copied = store.byId(secondPlaylist.id)!.tracks.first;
+        expect(copied.id, isNot(first.id));
+        expect(copied.canonicalIdentityKey, first.id);
+        expect(copied.spotify?.toJson(), first.spotify?.toJson());
+        expect(copied.musicInfo?.id, 'first');
+        expect(store.byId(secondPlaylist.id)!.tracks.last, same(second));
+        expect(await transfer(secondPlaylist.id, movedTo.id, second.id), 1);
+
+        container.dispose();
+        container = _containerWith(prefs);
+        store = container.read(localPlaylistsProvider.notifier);
+        final restored = store.byId(secondPlaylist.id)!.tracks.single;
+        expect(restored.id, copied.id);
+        expect(restored.withoutLocalPath().id, copied.id);
+        expect(
+          await store.setSpotifyTrackMatch(
+            secondPlaylist.id,
+            expected: restored,
+            music: _music('new-match', '替换音源'),
+          ),
+          isTrue,
+        );
+        final refreshed = await store.importSpotify(secondPreview);
+        expect(refreshed.tracks.single.id, copied.id);
+        expect(refreshed.tracks.single.musicInfo?.id, 'new-match');
+
+        expect(await transfer(secondPlaylist.id, other.id, copied.id), 1);
+        expect(store.byId(other.id)!.tracks.single.id, first.id);
+        expect(await transfer(other.id, secondPlaylist.id, first.id), 1);
+        final alternate = store.byId(secondPlaylist.id)!.tracks.single;
+        expect(alternate.id, isNot(second.id));
+        expect(
+          (await store.importSpotify(secondPreview)).tracks.single.id,
+          alternate.id,
+        );
+        expect(await transfer(movedTo.id, secondPlaylist.id, second.id), 1);
+        final restoredBoth = await store.importSpotify(secondPreview);
+        expect(restoredBoth.tracks.map((track) => track.id), [
+          alternate.id,
+          second.id,
+        ]);
+        expect(restoredBoth.tracks.map((track) => track.musicId), [
+          'new-match',
+          'second',
+        ]);
+        expect(restoredBoth.movedOutTrackIds, isEmpty);
+      },
+    );
+
+    test(
+      'transfers matched and unresolved Spotify entries independently',
+      () async {
+        final store = container.read(localPlaylistsProvider.notifier);
+        final unresolved = _spotifyTrack('shared');
+        final matched = _spotifyTrack('shared', _music('local-match', '已配音源'));
+        final matchedPlaylist = await store.importSpotify(
+          SpotifyPlaylistPreview(
+            id: 'transfer-matched',
+            name: '已匹配歌单',
+            total: 1,
+            tracks: [matched],
+          ),
+        );
+        final unresolvedPreview = SpotifyPlaylistPreview(
+          id: 'transfer-unmatched',
+          name: '未匹配歌单',
+          total: 1,
+          tracks: [unresolved],
+        );
+        final unresolvedPlaylist = await store.importSpotify(unresolvedPreview);
+
+        expect(
+          await store.transferPlaylistTracks(
+            fromPlaylistId: unresolvedPlaylist.id,
+            toPlaylistId: matchedPlaylist.id,
+            trackIds: [unresolved.id],
+            move: false,
+          ),
+          1,
+        );
+        final snapshot = store.byId(matchedPlaylist.id)!.tracks;
+        final alternate = snapshot.first;
+        expect(alternate.id, isNot(unresolved.id));
+        expect(alternate.isUnmatchedSpotify, isTrue);
+        final candidate = MusicInfo.fromJson({
+          ..._music('new-match', 'shared').toJson(),
+          'singer': unresolved.spotify!.artist,
+        });
+        final importer = SpotifyPlaylistImporter(
+          search: (_, _) async => [candidate],
+          enabledPlatforms: () async => [MusicSource.wy],
+        );
+        final replacements = await importer.rematchUnmatched(snapshot);
+        expect(replacements.first.id, alternate.id);
+        expect(
+          await store.patchSpotifyMatches(
+            matchedPlaylist.id,
+            snapshot: snapshot,
+            replacements: replacements,
+          ),
+          1,
+        );
+
+        expect(
+          await store.transferPlaylistTracks(
+            fromPlaylistId: matchedPlaylist.id,
+            toPlaylistId: unresolvedPlaylist.id,
+            trackIds: [matched.id],
+            move: true,
+          ),
+          1,
+        );
+        final target = await store.importSpotify(unresolvedPreview);
+        expect(target.tracks.map((track) => track.musicId), [
+          matched.musicId,
+          unresolved.musicId,
+        ]);
+        expect(target.tracks.last.toJson(), unresolved.toJson());
+        expect(store.byId(matchedPlaylist.id)!.tracks.single.id, alternate.id);
+        expect(
+          store.byId(matchedPlaylist.id)!.tracks.single.musicId,
+          candidate.id,
+        );
+      },
+    );
+
+    test(
+      'online refresh skips moved-out legacy songs until explicitly re-added',
+      () async {
+        final notifier = container.read(localPlaylistsProvider.notifier);
+        final moved = _music('moved', '移出的歌曲');
+        final removed = _music('removed', '普通删除的歌曲');
+        final online = PlaylistInfo(
+          id: 'legacy-move',
+          name: '旧版在线歌单',
+          source: MusicSource.wy,
+          tracks: [moved, removed],
+        );
+        final created = await notifier.importOnline(online);
+        final legacy = created.toJson()..remove('onlineTrackIds');
+        await notifier.applyFromSync([legacy]);
+        final target = await notifier.create('转移目标');
+        final movedId = created.tracks.first.id;
+        final removedId = created.tracks.last.id;
+        await notifier.removeTrack(created.id, removedId);
+        expect(
+          await notifier.transferPlaylistTracks(
+            fromPlaylistId: created.id,
+            toPlaylistId: target.id,
+            trackIds: [movedId, 'missing'],
+            move: true,
+          ),
+          1,
+        );
+        expect(notifier.byId(created.id)!.movedOutTrackIds, [movedId]);
+        await notifier.applyFromSync([legacy, notifier.exportForSync().last]);
+        expect(notifier.byId(created.id)!.tracks.map((t) => t.id), [removedId]);
+
+        final cloud = notifier.exportForSync();
+        expect(cloud.first['movedOutTrackIds'], [movedId]);
+        await notifier.delete(created.id);
+        await notifier.applyFromSync(cloud);
+        expect((await notifier.importOnline(online)).tracks.map((t) => t.id), [
+          removedId,
+        ]);
+        expect(
+          (await notifier.importOnline(
+            online,
+            synchronizeTracks: true,
+          )).tracks.map((t) => t.id),
+          [removedId],
+        );
+
+        await notifier.addMusic(created.id, moved);
+        expect(notifier.byId(created.id)!.movedOutTrackIds, isEmpty);
+        await notifier.removeTrack(created.id, movedId);
+        expect(
+          (await notifier.importOnline(
+            online,
+            synchronizeTracks: true,
+          )).tracks.map((t) => t.id),
+          [movedId, removedId],
+        );
+      },
+    );
+
+    test(
+      'partial and full Spotify refresh respect a move and a move back',
+      () async {
+        final notifier = container.read(localPlaylistsProvider.notifier);
+        final moved = _spotifyTrack('moved');
+        final kept = _spotifyTrack('kept');
+        final unseen = _spotifyTrack('unseen');
+        final full = SpotifyPlaylistPreview(
+          id: 'spotify-refresh',
+          name: 'Spotify 歌单',
+          tracks: [moved, kept, unseen],
+          total: 3,
+        );
+        final partial = SpotifyPlaylistPreview(
+          id: full.id,
+          name: full.name,
+          tracks: [moved, kept],
+          total: 3,
+        );
+        final source = await notifier.importSpotify(full);
+        final target = await notifier.create('移出目标');
+        expect(
+          await notifier.transferPlaylistTracks(
+            fromPlaylistId: source.id,
+            toPlaylistId: target.id,
+            trackIds: [moved.id, unseen.id],
+            move: true,
+          ),
+          2,
+        );
+        expect(
+          (await notifier.importSpotify(partial)).tracks.map((t) => t.id),
+          [kept.id],
+        );
+
+        container.dispose();
+        container = _containerWith(prefs);
+        final restored = container.read(localPlaylistsProvider.notifier);
+        expect((await restored.importSpotify(full)).tracks.map((t) => t.id), [
+          kept.id,
+        ]);
+        expect(
+          await restored.transferPlaylistTracks(
+            fromPlaylistId: target.id,
+            toPlaylistId: source.id,
+            trackIds: [moved.id],
+            move: true,
+          ),
+          1,
+        );
+        expect((await restored.importSpotify(full)).tracks.map((t) => t.id), [
+          moved.id,
+          kept.id,
+        ]);
+        expect(restored.byId(source.id)!.movedOutTrackIds, [unseen.id]);
+      },
+    );
 
     test('adds local entries in bulk, deduplicates, and restores', () async {
       final notifier = container.read(localPlaylistsProvider.notifier);
@@ -787,6 +1261,18 @@ MusicInfo _music(
     },
   });
 }
+
+PlaylistTrack _spotifyTrack(String id, [MusicInfo? match]) =>
+    PlaylistTrack.fromSpotify(
+      SpotifyTrackMetadata(
+        uri: 'spotify:track:$id',
+        title: id,
+        artist: 'Spotify 歌手',
+        occurrence: 0,
+      ),
+      match,
+      manual: true,
+    );
 
 class _RecordingPlaylistMusicApi extends MusicApi {
   _RecordingPlaylistMusicApi(this.result);

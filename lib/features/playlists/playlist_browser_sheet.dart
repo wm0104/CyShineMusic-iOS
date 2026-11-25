@@ -9,11 +9,12 @@ import 'playlist_models.dart';
 import 'playlist_store.dart';
 import 'widgets/playlist_artwork.dart';
 
-enum PlaylistBrowserMode { browse, addSongs }
+enum PlaylistBrowserMode { browse, addSongs, moveSongs }
 
 Future<String?> showPlaylistBrowserSheet(
   BuildContext context, {
   PlaylistBrowserMode mode = PlaylistBrowserMode.browse,
+  String? excludePlaylistId,
 }) {
   return showModalBottomSheet<String>(
     context: context,
@@ -23,7 +24,8 @@ Future<String?> showPlaylistBrowserSheet(
     showDragHandle: false,
     backgroundColor: Colors.transparent,
     barrierColor: Theme.of(context).colorScheme.scrim.withValues(alpha: 0.42),
-    builder: (_) => _PlaylistBrowserSheet(mode: mode),
+    builder: (_) =>
+        _PlaylistBrowserSheet(mode: mode, excludePlaylistId: excludePlaylistId),
   );
 }
 
@@ -62,16 +64,73 @@ Future<void> addMusicToChosenPlaylist(
   }
 }
 
+Future<int> transferTracksToChosenPlaylist(
+  BuildContext context,
+  WidgetRef ref, {
+  required String fromPlaylistId,
+  required Iterable<String> trackIds,
+  required bool move,
+}) async {
+  final ids = trackIds.toSet();
+  if (ids.isEmpty) return 0;
+  final destination = await showPlaylistBrowserSheet(
+    context,
+    mode: move ? PlaylistBrowserMode.moveSongs : PlaylistBrowserMode.addSongs,
+    excludePlaylistId: fromPlaylistId,
+  );
+  if (!context.mounted || destination == null) return 0;
+
+  const prefix = '/playlists/';
+  if (!destination.startsWith(prefix)) return 0;
+  final store = ref.read(localPlaylistsProvider.notifier);
+  final playlist = store.byId(destination.substring(prefix.length));
+  if (playlist == null) {
+    showAppToast(context, '目标歌单不存在', type: AppToastType.warning);
+    return 0;
+  }
+
+  try {
+    final count = await store.transferPlaylistTracks(
+      fromPlaylistId: fromPlaylistId,
+      toPlaylistId: playlist.id,
+      trackIds: ids,
+      move: move,
+    );
+    if (!context.mounted) return count;
+    showAppToast(
+      context,
+      count == 0
+          ? (move ? '原歌单中的歌曲已变化' : '所选歌曲已在「${playlist.name}」中')
+          : '${move ? '已移动' : '已添加'} $count 首歌曲到「${playlist.name}」',
+      type: count == 0 ? AppToastType.info : AppToastType.success,
+    );
+    return count;
+  } catch (error) {
+    if (context.mounted) {
+      showAppToast(
+        context,
+        '${move ? '移动' : '添加'}到歌单失败：$error',
+        type: AppToastType.error,
+      );
+    }
+    return 0;
+  }
+}
+
 class _PlaylistBrowserSheet extends ConsumerWidget {
-  const _PlaylistBrowserSheet({required this.mode});
+  const _PlaylistBrowserSheet({required this.mode, this.excludePlaylistId});
 
   final PlaylistBrowserMode mode;
+  final String? excludePlaylistId;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final scheme = Theme.of(context).colorScheme;
-    final playlists = ref.watch(localPlaylistsProvider);
-    final selecting = mode == PlaylistBrowserMode.addSongs;
+    final playlists = ref
+        .watch(localPlaylistsProvider)
+        .where((playlist) => playlist.id != excludePlaylistId)
+        .toList(growable: false);
+    final selecting = mode != PlaylistBrowserMode.browse;
     final viewportHeight = MediaQuery.sizeOf(context).height;
     final minChildSize = (176 / viewportHeight).clamp(0.44, 0.68);
     return DraggableScrollableSheet(
@@ -108,7 +167,11 @@ class _PlaylistBrowserSheet extends ConsumerWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            selecting ? '添加歌曲到' : '我的歌单',
+                            switch (mode) {
+                              PlaylistBrowserMode.browse => '我的歌单',
+                              PlaylistBrowserMode.addSongs => '添加歌曲到',
+                              PlaylistBrowserMode.moveSongs => '移动歌曲到',
+                            },
                             style: TextStyle(
                               color: scheme.onSurface,
                               fontSize: 20,
@@ -167,7 +230,7 @@ class _PlaylistBrowserSheet extends ConsumerWidget {
                             final playlist = playlists[index];
                             return _PlaylistSheetTile(
                               playlist: playlist,
-                              selecting: selecting,
+                              mode: mode,
                               onTap: () => Navigator.of(
                                 context,
                               ).pop('/playlists/${playlist.id}'),
@@ -264,12 +327,12 @@ class _FixedManagementTile extends StatelessWidget {
 class _PlaylistSheetTile extends StatelessWidget {
   const _PlaylistSheetTile({
     required this.playlist,
-    required this.selecting,
+    required this.mode,
     required this.onTap,
   });
 
   final LocalPlaylist playlist;
-  final bool selecting;
+  final PlaylistBrowserMode mode;
   final VoidCallback onTap;
 
   @override
@@ -315,9 +378,11 @@ class _PlaylistSheetTile extends StatelessWidget {
             style: const TextStyle(fontWeight: FontWeight.w600),
           ),
           subtitle: Text('${playlist.tracks.length} 首歌曲'),
-          trailing: Icon(
-            selecting ? Icons.add_rounded : Icons.chevron_right_rounded,
-          ),
+          trailing: Icon(switch (mode) {
+            PlaylistBrowserMode.browse => Icons.chevron_right_rounded,
+            PlaylistBrowserMode.addSongs => Icons.add_rounded,
+            PlaylistBrowserMode.moveSongs => Icons.drive_file_move_rounded,
+          }),
         ),
       ),
     );

@@ -30,6 +30,7 @@ class SongRow extends StatelessWidget {
     required this.onPlay,
     required this.onDelete,
     this.playlistMode = false,
+    this.onMoveToPlaylist,
   });
 
   final DownloadHistoryEntry entry;
@@ -44,6 +45,7 @@ class SongRow extends StatelessWidget {
   final VoidCallback onPlay;
   final VoidCallback onDelete;
   final bool playlistMode;
+  final VoidCallback? onMoveToPlaylist;
 
   @override
   Widget build(BuildContext context) {
@@ -198,9 +200,11 @@ class SongRow extends StatelessWidget {
       enabled: !batchMode,
       endActionPane: ActionPane(
         motion: const BehindMotion(),
-        extentRatio: playlistMode ? 0.22 : 0.4,
+        extentRatio: playlistMode
+            ? (onMoveToPlaylist == null ? 0.22 : 0.66)
+            : 0.4,
         children: [
-          if (!playlistMode)
+          if (!playlistMode || onMoveToPlaylist != null)
             SlidableAction(
               key: const ValueKey('song-add-playlist-action'),
               autoClose: false,
@@ -211,7 +215,20 @@ class SongRow extends StatelessWidget {
               backgroundColor: scheme.secondaryContainer,
               foregroundColor: scheme.onSecondaryContainer,
               icon: Icons.playlist_add_rounded,
-              label: '歌单',
+              label: playlistMode ? '添加到歌单' : '歌单',
+            ),
+          if (onMoveToPlaylist case final move?)
+            SlidableAction(
+              key: const ValueKey('song-move-playlist-action'),
+              autoClose: false,
+              onPressed: (actionContext) async {
+                await Slidable.of(actionContext)?.close();
+                move();
+              },
+              backgroundColor: scheme.tertiaryContainer,
+              foregroundColor: scheme.onTertiaryContainer,
+              icon: Icons.drive_file_move_rounded,
+              label: '移动到歌单',
             ),
           SlidableAction(
             key: ValueKey(

@@ -167,6 +167,7 @@ class LyricLineTile extends ConsumerWidget {
         (settings) => (
           weight: settings.lyricFontWeight,
           size: settings.lyricFontSize,
+          translationWeight: settings.lyricTranslationFontWeight,
           translationSize: settings.lyricTranslationFontSize,
         ),
       ),
@@ -174,10 +175,7 @@ class LyricLineTile extends ConsumerWidget {
     final blurDisabled = ref.watch(
       settingsProvider.select((settings) => settings.lyricViewBlurDisabled),
     );
-    final secondaryWeight = (font.weight - 100).clamp(
-      kLyricFontWeightMin,
-      kLyricFontWeightMax,
-    );
+    final romanWeight = lyricRomanizationFontWeight(font.weight);
     final sizeScale = font.size / kLyricFontSizeDefault;
     final ink = Theme.of(context).brightness == Brightness.dark
         ? Colors.white
@@ -197,8 +195,8 @@ class LyricLineTile extends ConsumerWidget {
       color: ink.withValues(alpha: active && !line.hasWordTiming ? 1 : 0.3),
       fontFamilyFallback: kPlayerFontFallback,
       fontSize: font.translationSize,
-      fontWeight: FontWeight(secondaryWeight.round()),
-      fontVariations: [FontVariation.weight(secondaryWeight)],
+      fontWeight: FontWeight(font.translationWeight.round()),
+      fontVariations: [FontVariation.weight(font.translationWeight)],
       height: 1.30,
       letterSpacing: 0,
     );
@@ -265,7 +263,11 @@ class LyricLineTile extends ConsumerWidget {
               child: _LyricTextStyle(
                 duration: colorDuration,
                 curve: _kLyricFocusCurve,
-                style: subStyle.copyWith(fontSize: 12 * sizeScale),
+                style: subStyle.copyWith(
+                  fontSize: 12 * sizeScale,
+                  fontWeight: FontWeight(romanWeight.round()),
+                  fontVariations: [FontVariation.weight(romanWeight)],
+                ),
                 child: Text(roman, textAlign: TextAlign.start),
               ),
             ),

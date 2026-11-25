@@ -11,6 +11,9 @@ class PlaylistBatchDownloadBar extends StatelessWidget {
     required this.onRemove,
     required this.onDownload,
     required this.onPlaySelected,
+    this.showPlaylistTransfers = false,
+    this.onAddToPlaylist,
+    this.onMoveToPlaylist,
   });
 
   final int selectedCount;
@@ -19,6 +22,9 @@ class PlaylistBatchDownloadBar extends StatelessWidget {
   final VoidCallback? onRemove;
   final VoidCallback? onDownload;
   final VoidCallback? onPlaySelected;
+  final bool showPlaylistTransfers;
+  final VoidCallback? onAddToPlaylist;
+  final VoidCallback? onMoveToPlaylist;
 
   @override
   Widget build(BuildContext context) {
@@ -49,6 +55,22 @@ class PlaylistBatchDownloadBar extends StatelessWidget {
                   enabledColor: scheme.error,
                 ),
               ),
+              if (showPlaylistTransfers) ...[
+                Expanded(
+                  child: _PlaylistBatchAction(
+                    icon: Icons.playlist_add_rounded,
+                    label: '添加到歌单',
+                    onPressed: submitting ? null : onAddToPlaylist,
+                  ),
+                ),
+                Expanded(
+                  child: _PlaylistBatchAction(
+                    icon: Icons.drive_file_move_rounded,
+                    label: '移动到歌单',
+                    onPressed: submitting ? null : onMoveToPlaylist,
+                  ),
+                ),
+              ],
               Expanded(
                 child: _PlaylistBatchAction(
                   icon: submitting

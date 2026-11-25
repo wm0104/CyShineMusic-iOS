@@ -10,6 +10,8 @@ class SongsBatchActionBar extends StatelessWidget {
     required this.onAddToPlaylist,
     required this.onPlaySelected,
     this.playlistMode = false,
+    this.showPlaylistTransfers = false,
+    this.onMoveToPlaylist,
   });
 
   final int selectedCount;
@@ -17,6 +19,8 @@ class SongsBatchActionBar extends StatelessWidget {
   final VoidCallback? onAddToPlaylist;
   final VoidCallback? onPlaySelected;
   final bool playlistMode;
+  final bool showPlaylistTransfers;
+  final VoidCallback? onMoveToPlaylist;
 
   @override
   Widget build(BuildContext context) {
@@ -47,12 +51,20 @@ class SongsBatchActionBar extends StatelessWidget {
                 enabledColor: scheme.error,
               ),
             ),
-            if (!playlistMode)
+            if (!playlistMode || showPlaylistTransfers)
               Expanded(
                 child: _SongsBatchAction(
                   icon: Icons.playlist_add_rounded,
-                  label: '加入歌单',
+                  label: playlistMode ? '添加到歌单' : '加入歌单',
                   onPressed: onAddToPlaylist,
+                ),
+              ),
+            if (showPlaylistTransfers)
+              Expanded(
+                child: _SongsBatchAction(
+                  icon: Icons.drive_file_move_rounded,
+                  label: '移动到歌单',
+                  onPressed: onMoveToPlaylist,
                 ),
               ),
             Expanded(

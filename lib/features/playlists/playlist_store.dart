@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -69,6 +70,26 @@ class LocalPlaylistNotifier extends Notifier<List<LocalPlaylist>> {
     state = List<LocalPlaylist>.unmodifiable(next);
     await _persist();
     return true;
+  }
+
+  Future<void> setPlaylistOrder(List<String> playlistIds) async {
+    final byId = {for (final playlist in state) playlist.id: playlist};
+    final requested = playlistIds.toSet();
+    if (playlistIds.length != byId.length ||
+        requested.length != playlistIds.length ||
+        !requested.containsAll(byId.keys)) {
+      throw const PlaylistStoreException('歌单列表已变化，请重新整理');
+    }
+    if (listEquals(
+      state.map((playlist) => playlist.id).toList(),
+      playlistIds,
+    )) {
+      return;
+    }
+    state = List<LocalPlaylist>.unmodifiable(
+      playlistIds.map((id) => byId[id]!),
+    );
+    await _persist();
   }
 
   Future<void> setCustomTrackOrder(
@@ -148,12 +169,12 @@ class LocalPlaylistNotifier extends Notifier<List<LocalPlaylist>> {
     final index = state.indexWhere((playlist) => playlist.id == playlistId);
     if (index < 0 || expected.spotify == null) return false;
     final current = state[index];
-    if (current.originSourceCode != 'spotify') return false;
     final trackIndex = current.tracks.indexWhere(
       (track) => track.identityKey == expected.identityKey,
     );
     if (trackIndex < 0) return false;
     final track = current.tracks[trackIndex];
+    if (track.spotify == null) return false;
     final replacement = expected.withSpotifyMatch(music);
     final updated = track.spotifyMatchReplacement(
       snapshot: expected,
@@ -297,15 +318,20 @@ class LocalPlaylistNotifier extends Notifier<List<LocalPlaylist>> {
 
     if (existingIndex >= 0) {
       final current = state[existingIndex];
+      final movedOut = current.movedOutTrackIds?.toSet() ?? const <String>{};
+      final availableTracks = importedTracks.where(
+        (track) => !movedOut.contains(track.identityKey),
+      );
       // A partial Spotify preview only establishes the order of the visible prefix.
-      final refreshedTracks = <PlaylistTrack>[...importedTracks];
+      final refreshedTracks = availableTracks.toList();
       if (preserveUnseenTracks) {
         final visible = onlineTrackIds.toSet();
         final previous = current.onlineTrackIds?.toSet();
         for (final track in current.tracks) {
           if ((previous?.contains(track.identityKey) ??
                   track.spotify != null) &&
-              !visible.contains(track.identityKey)) {
+              !visible.contains(track.identityKey) &&
+              !movedOut.contains(track.identityKey)) {
             refreshedTracks.add(track);
           }
         }
@@ -316,9 +342,12 @@ class LocalPlaylistNotifier extends Notifier<List<LocalPlaylist>> {
               refreshedTracks,
               previousOnlineTrackIds: current.onlineTrackIds,
             )
-          : _mergeTrackLists(current.tracks, importedTracks).tracks;
+          : _mergeTrackLists(current.tracks, availableTracks).tracks;
       final storedOnlineTrackIds = synchronizeTracks
-          ? _uniqueTrackIds(refreshedTracks)
+          ? _mergeOnlineTrackIds(
+              onlineTrackIds,
+              _uniqueTrackIds(refreshedTracks),
+            )
           : _mergeOnlineTrackIds(current.onlineTrackIds, onlineTrackIds);
       final updated = LocalPlaylist(
         id: current.id,
@@ -329,6 +358,8 @@ class LocalPlaylistNotifier extends Notifier<List<LocalPlaylist>> {
         originPlaylistId: originId,
         originSourceCode: sourceCode,
         onlineTrackIds: storedOnlineTrackIds,
+        movedOutTrackIds: current.movedOutTrackIds,
+        movedOutTrackProviders: current.movedOutTrackProviders,
         customTrackOrder: current.copyWith(tracks: tracks).customTrackOrder,
         originTrackCount: originTrackCount,
         originPreviewCount: sourceCode == 'spotify'
@@ -399,13 +430,15 @@ class LocalPlaylistNotifier extends Notifier<List<LocalPlaylist>> {
   List<Map<String, dynamic>> exportForSync() {
     return List<Map<String, dynamic>>.unmodifiable([
       for (final playlist in state)
-        playlist.copyWith(
-          tracks: [
-            for (final track in playlist.tracks)
-              if (track.musicInfo != null || track.spotify != null)
-                track.withoutLocalPath(),
-          ],
-        ).toJson(),
+        playlist
+            .copyWith(
+              tracks: [
+                for (final track in playlist.tracks)
+                  if (track.musicInfo != null || track.spotify != null)
+                    track.withoutLocalPath(),
+              ],
+            )
+            .toJson(),
     ]);
   }
 
@@ -429,6 +462,18 @@ class LocalPlaylistNotifier extends Notifier<List<LocalPlaylist>> {
         restored.add(remote);
         continue;
       }
+      final sameOrigin =
+          remote.originPlaylistId == current.originPlaylistId &&
+          remote.originSourceCode == current.originSourceCode;
+      // Legacy payloads omit move history. An empty list explicitly clears it.
+      final movedOutTrackIds =
+          remote.movedOutTrackIds ??
+          (sameOrigin ? current.movedOutTrackIds : null);
+      final movedOutTrackProviders =
+          remote.movedOutTrackIds == null && sameOrigin
+          ? current.movedOutTrackProviders
+          : remote.movedOutTrackProviders;
+      final movedOut = movedOutTrackIds?.toSet() ?? const <String>{};
       final currentByTrack = {
         for (final track in current.tracks) track.identityKey: track,
       };
@@ -437,33 +482,25 @@ class LocalPlaylistNotifier extends Notifier<List<LocalPlaylist>> {
         for (final track in current.tracks)
           if (track.musicInfo == null &&
               track.isLocal &&
+              !movedOut.contains(track.identityKey) &&
               !remoteIds.contains(track.identityKey))
             track,
       ];
       final portable = [
         for (final track in remote.tracks)
-          currentByTrack[track.identityKey]?.mergePreferLocal(track) ?? track,
+          if (!movedOut.contains(track.identityKey))
+            currentByTrack[track.identityKey]?.mergePreferLocal(track) ?? track,
       ];
-      final tracks = List<PlaylistTrack>.unmodifiable([...localOnly, ...portable]);
+      final tracks = List<PlaylistTrack>.unmodifiable([
+        ...localOnly,
+        ...portable,
+      ]);
       restored.add(
-        LocalPlaylist(
-          id: remote.id,
-          name: remote.name,
+        remote.copyWith(
           tracks: tracks,
-          customTrackOrder: remote.copyWith(
-            tracks: tracks,
-            customTrackOrder: remote.customTrackOrder ?? current.customTrackOrder,
-          ).customTrackOrder,
-          createdAt: remote.createdAt,
-          updatedAt: remote.updatedAt,
-          originPlaylistId: remote.originPlaylistId,
-          originSourceCode: remote.originSourceCode,
-          onlineTrackIds: remote.onlineTrackIds,
-          originTrackCount: remote.originTrackCount,
-          originPreviewCount: remote.originPreviewCount,
-          coverUrl: remote.coverUrl,
-          creator: remote.creator,
-          description: remote.description,
+          customTrackOrder: remote.customTrackOrder ?? current.customTrackOrder,
+          movedOutTrackIds: movedOutTrackIds,
+          movedOutTrackProviders: movedOutTrackProviders,
         ),
       );
     }
@@ -541,6 +578,102 @@ class LocalPlaylistNotifier extends Notifier<List<LocalPlaylist>> {
     state = List<LocalPlaylist>.unmodifiable(next);
     await _persist();
     return removed;
+  }
+
+  Future<int> transferPlaylistTracks({
+    required String fromPlaylistId,
+    required String toPlaylistId,
+    required Iterable<String> trackIds,
+    required bool move,
+  }) async {
+    if (fromPlaylistId == toPlaylistId) return 0;
+    final sourceIndex = state.indexWhere((p) => p.id == fromPlaylistId);
+    final targetIndex = state.indexWhere((p) => p.id == toPlaylistId);
+    if (sourceIndex < 0 || targetIndex < 0) return 0;
+
+    final source = state[sourceIndex];
+    final target = state[targetIndex];
+    final requested = trackIds.toSet();
+    final selected = source.customOrderedTracks
+        .where((track) => requested.contains(track.identityKey))
+        .toList(growable: false);
+    if (selected.isEmpty) return 0;
+
+    final entryKeys = <String>{};
+    final resourceKeys = <String>{};
+    final unresolvedKeys = <String>{};
+    void index(PlaylistTrack track) {
+      final canonicalKey = track.canonicalIdentityKey;
+      final providerKey = track.providerIdentityKey;
+      final fileKey = track.localFileIdentityKey;
+      entryKeys.add(track.identityKey);
+      if (providerKey == null) {
+        unresolvedKeys.add(canonicalKey);
+      } else {
+        resourceKeys.add(providerKey);
+      }
+      if (fileKey != null) resourceKeys.add(fileKey);
+    }
+
+    target.tracks.forEach(index);
+    final added = <PlaylistTrack>[];
+    for (final track in selected) {
+      final canonicalKey = track.canonicalIdentityKey;
+      final providerKey = track.providerIdentityKey;
+      if (resourceKeys.contains(providerKey) ||
+          resourceKeys.contains(track.localFileIdentityKey) ||
+          (providerKey == null && unresolvedKeys.contains(canonicalKey))) {
+        continue;
+      }
+
+      // A moved-out Spotify original can reclaim its entry alongside another match.
+      final reservedProviders = target.movedOutTrackProviders;
+      final reservedForAnotherVersion =
+          (reservedProviders?.containsKey(canonicalKey) ?? false) &&
+          reservedProviders![canonicalKey] != providerKey;
+      var entryKey = canonicalKey;
+      if (entryKeys.contains(entryKey) || reservedForAnotherVersion) {
+        final base = 'entry:${jsonEncode([canonicalKey, providerKey])}';
+        entryKey = base;
+        for (var suffix = 2; entryKeys.contains(entryKey); suffix++) {
+          entryKey = '$base:$suffix';
+        }
+      }
+      final entry = track.identityKey == entryKey
+          ? track
+          : track.copyWith(playlistEntryKey: entryKey);
+      index(entry);
+      added.add(entry);
+    }
+    if (added.isEmpty && !move) return 0;
+
+    final now = DateTime.now();
+    final next = [...state];
+    if (added.isNotEmpty) {
+      final history = _movedOutAfterAdding(target, added);
+      next[targetIndex] = target.copyWith(
+        tracks: List<PlaylistTrack>.unmodifiable([...added, ...target.tracks]),
+        movedOutTrackIds: history?.ids,
+        movedOutTrackProviders: history?.providers,
+        updatedAt: now,
+      );
+    }
+    if (move) {
+      final history = _movedOutAfterMoving(source, selected);
+      next[sourceIndex] = source.copyWith(
+        tracks: List<PlaylistTrack>.unmodifiable(
+          source.tracks.where(
+            (track) => !requested.contains(track.identityKey),
+          ),
+        ),
+        movedOutTrackIds: history?.ids,
+        movedOutTrackProviders: history?.providers,
+        updatedAt: now,
+      );
+    }
+    state = List<LocalPlaylist>.unmodifiable(next);
+    await _persist();
+    return move ? selected.length : added.length;
   }
 
   Future<int> removeLocalPathFromAll(String path) async {
@@ -653,9 +786,12 @@ class LocalPlaylistNotifier extends Notifier<List<LocalPlaylist>> {
     );
     if (!merged.changed) return 0;
 
+    final history = _movedOutAfterAdding(current, candidates);
     final next = [...state];
     next[index] = current.copyWith(
       tracks: merged.tracks,
+      movedOutTrackIds: history?.ids,
+      movedOutTrackProviders: history?.providers,
       updatedAt: DateTime.now(),
     );
     state = List<LocalPlaylist>.unmodifiable(next);
@@ -839,6 +975,54 @@ List<PlaylistTrack> _synchronizeTrackLists(
     }
   }
   return List<PlaylistTrack>.unmodifiable(synchronized);
+}
+
+typedef _MovedOutTracks = ({List<String> ids, Map<String, String?> providers});
+
+_MovedOutTracks? _movedOutAfterAdding(
+  LocalPlaylist playlist,
+  Iterable<PlaylistTrack> added,
+) {
+  final movedOut = playlist.movedOutTrackIds;
+  if (movedOut == null || movedOut.isEmpty) return null;
+  final addedIds = {for (final track in added) track.identityKey};
+  final providers = {...?playlist.movedOutTrackProviders}
+    ..removeWhere((id, _) => addedIds.contains(id));
+  return (
+    ids: movedOut.where((id) => !addedIds.contains(id)).toList(),
+    providers: providers,
+  );
+}
+
+_MovedOutTracks? _movedOutAfterMoving(
+  LocalPlaylist playlist,
+  Iterable<PlaylistTrack> moved,
+) {
+  if (playlist.onlinePlaylistId == null) return null;
+  final snapshot = playlist.onlineTrackIds?.toSet();
+  final onlineSource = playlist.onlineSource;
+  final spotify = playlist.originSourceCode == 'spotify';
+  final movedOut = <String>{...?playlist.movedOutTrackIds};
+  final providers = {...?playlist.movedOutTrackProviders};
+  for (final track in moved) {
+    // Older imports have no remote snapshot. Infer membership from the origin.
+    final belongsToOrigin =
+        snapshot?.contains(track.identityKey) ??
+        (spotify
+            ? track.spotify != null &&
+                  track.identityKey == track.canonicalIdentityKey
+            : onlineSource != null &&
+                  track.spotify == null &&
+                  track.source == onlineSource);
+    if (!belongsToOrigin) continue;
+    movedOut.add(track.identityKey);
+    if (spotify) {
+      providers[track.identityKey] = track.providerIdentityKey;
+    }
+  }
+  return movedOut.isEmpty
+      ? null
+      : (ids: movedOut.toList(), providers: providers);
 }
 
 List<String> _uniqueTrackIds(Iterable<PlaylistTrack> tracks) {

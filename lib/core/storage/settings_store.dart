@@ -29,6 +29,7 @@ const String _kFlowingLightEnabledKey = 'flowing_light_enabled';
 const String _kLyricViewBlurDisabledKey = 'lyric_view_blur_disabled';
 const String _kSquareAlbumCoverEnabledKey = 'square_album_cover_enabled';
 const String _kLyricFontWeightKey = 'lyric_font_weight';
+const String _kLyricTranslationFontWeightKey = 'lyric_translation_font_weight';
 const String _kLyricFontSizeKey = 'lyric_font_size';
 const String _kLyricTranslationFontSizeKey = 'lyric_translation_font_size';
 const String _kCarPadModeEnabledKey = 'car_pad_mode_enabled';
@@ -54,6 +55,7 @@ const String _kLegacyBaseUrlKey = 'base_url';
 const kLyricFontWeightMin = 100.0;
 const kLyricFontWeightMax = 1000.0;
 const kLyricFontWeightDefault = 500.0;
+const kLyricTranslationFontWeightDefault = kLyricFontWeightDefault - 100;
 const kLyricFontSizeMin = 16.0;
 const kLyricFontSizeMax = 56.0;
 const kLyricFontSizeDefault = 32.0;
@@ -65,6 +67,9 @@ double normalizeLyricFontWeight(double value) =>
     (value.clamp(kLyricFontWeightMin, kLyricFontWeightMax) / 100)
         .roundToDouble() *
     100;
+
+double lyricRomanizationFontWeight(double originalWeight) =>
+    (originalWeight - 100).clamp(kLyricFontWeightMin, kLyricFontWeightMax);
 
 double normalizeLyricFontSize(double value) =>
     value.clamp(kLyricFontSizeMin, kLyricFontSizeMax).roundToDouble();
@@ -108,6 +113,7 @@ class AppSettings {
     this.lyricViewBlurDisabled = false,
     this.squareAlbumCoverEnabled = false,
     this.lyricFontWeight = kLyricFontWeightDefault,
+    this.lyricTranslationFontWeight = kLyricTranslationFontWeightDefault,
     this.lyricFontSize = kLyricFontSizeDefault,
     this.lyricTranslationFontSize = kLyricTranslationFontSizeDefault,
     required this.carPadModeEnabled,
@@ -145,6 +151,7 @@ class AppSettings {
   final bool lyricViewBlurDisabled;
   final bool squareAlbumCoverEnabled;
   final double lyricFontWeight;
+  final double lyricTranslationFontWeight;
   final double lyricFontSize;
   final double lyricTranslationFontSize;
 
@@ -189,6 +196,7 @@ class AppSettings {
     bool? lyricViewBlurDisabled,
     bool? squareAlbumCoverEnabled,
     double? lyricFontWeight,
+    double? lyricTranslationFontWeight,
     double? lyricFontSize,
     double? lyricTranslationFontSize,
     bool? carPadModeEnabled,
@@ -226,6 +234,8 @@ class AppSettings {
     squareAlbumCoverEnabled:
         squareAlbumCoverEnabled ?? this.squareAlbumCoverEnabled,
     lyricFontWeight: lyricFontWeight ?? this.lyricFontWeight,
+    lyricTranslationFontWeight:
+        lyricTranslationFontWeight ?? this.lyricTranslationFontWeight,
     lyricFontSize: lyricFontSize ?? this.lyricFontSize,
     lyricTranslationFontSize:
         lyricTranslationFontSize ?? this.lyricTranslationFontSize,
@@ -298,6 +308,15 @@ class SettingsNotifier extends Notifier<AppSettings> {
     }
     final downloadDir =
         _prefs.getString(_kDownloadDirKey) ?? kDefaultDownloadDir;
+    final rawLyricWeight = _prefs.get(_kLyricFontWeightKey);
+    final lyricWeight = _validLyricFontWeight(rawLyricWeight)
+        ? normalizeLyricFontWeight((rawLyricWeight as num).toDouble())
+        : kLyricFontWeightDefault;
+    final rawTranslationWeight = _prefs.get(_kLyricTranslationFontWeightKey);
+    // Before translation had a setting, it used the same weight as romanization.
+    final translationWeight = _validLyricFontWeight(rawTranslationWeight)
+        ? normalizeLyricFontWeight((rawTranslationWeight as num).toDouble())
+        : lyricRomanizationFontWeight(lyricWeight);
     final rawLyricSize = _prefs.get(_kLyricFontSizeKey);
     final lyricSize = _validLyricFontSize(rawLyricSize)
         ? normalizeLyricFontSize((rawLyricSize as num).toDouble())
@@ -332,11 +351,8 @@ class SettingsNotifier extends Notifier<AppSettings> {
           _prefs.getBool(_kLyricViewBlurDisabledKey) ?? false,
       squareAlbumCoverEnabled:
           _prefs.getBool(_kSquareAlbumCoverEnabledKey) ?? false,
-      lyricFontWeight: _validLyricFontWeight(_prefs.get(_kLyricFontWeightKey))
-          ? normalizeLyricFontWeight(
-              (_prefs.get(_kLyricFontWeightKey) as num).toDouble(),
-            )
-          : kLyricFontWeightDefault,
+      lyricFontWeight: lyricWeight,
+      lyricTranslationFontWeight: translationWeight,
       lyricFontSize: lyricSize,
       lyricTranslationFontSize: translationSize,
       carPadModeEnabled: _prefs.getBool(_kCarPadModeEnabledKey) ?? false,
@@ -488,30 +504,43 @@ class SettingsNotifier extends Notifier<AppSettings> {
   Future<void> setLyricFontStyle({
     required double weight,
     required double size,
+    double? translationWeight,
     double? translationSize,
   }) async {
+    final requestedTranslationWeight =
+        translationWeight ?? state.lyricTranslationFontWeight;
     final requestedTranslationSize =
         translationSize ?? state.lyricTranslationFontSize;
     if (!_validLyricFontWeight(weight) ||
+        !_validLyricFontWeight(requestedTranslationWeight) ||
         !_validLyricFontSize(size) ||
         !_validLyricTranslationFontSize(requestedTranslationSize)) {
       throw ArgumentError('歌词字体粗细或大小超出范围');
     }
     final nextWeight = normalizeLyricFontWeight(weight);
+    final nextTranslationWeight = normalizeLyricFontWeight(
+      requestedTranslationWeight,
+    );
     final nextSize = normalizeLyricFontSize(size);
     final nextTranslationSize = normalizeLyricTranslationFontSize(
       requestedTranslationSize,
     );
     if (state.lyricFontWeight == nextWeight &&
+        state.lyricTranslationFontWeight == nextTranslationWeight &&
         state.lyricFontSize == nextSize &&
         state.lyricTranslationFontSize == nextTranslationSize) {
       return;
     }
+    await _prefs.setDouble(
+      _kLyricTranslationFontWeightKey,
+      nextTranslationWeight,
+    );
     await _prefs.setDouble(_kLyricTranslationFontSizeKey, nextTranslationSize);
     await _prefs.setDouble(_kLyricFontWeightKey, nextWeight);
     await _prefs.setDouble(_kLyricFontSizeKey, nextSize);
     state = state.copyWith(
       lyricFontWeight: nextWeight,
+      lyricTranslationFontWeight: nextTranslationWeight,
       lyricFontSize: nextSize,
       lyricTranslationFontSize: nextTranslationSize,
     );
@@ -572,6 +601,7 @@ class SettingsNotifier extends Notifier<AppSettings> {
     'lyricViewBlurDisabled': state.lyricViewBlurDisabled,
     'squareAlbumCoverEnabled': state.squareAlbumCoverEnabled,
     'lyricFontWeight': state.lyricFontWeight,
+    'lyricTranslationFontWeight': state.lyricTranslationFontWeight,
     'lyricFontSize': state.lyricFontSize,
     'lyricTranslationFontSize': state.lyricTranslationFontSize,
   };
@@ -638,6 +668,14 @@ class SettingsNotifier extends Notifier<AppSettings> {
     final syncedLyricWeight = rawLyricWeight == null
         ? null
         : normalizeLyricFontWeight((rawLyricWeight as num).toDouble());
+    final rawTranslationWeight = json['lyricTranslationFontWeight'];
+    if (json.containsKey('lyricTranslationFontWeight') &&
+        !_validLyricFontWeight(rawTranslationWeight)) {
+      throw const FormatException('云端歌词译文粗细无效');
+    }
+    final syncedTranslationWeight = rawTranslationWeight == null
+        ? null
+        : normalizeLyricFontWeight((rawTranslationWeight as num).toDouble());
     final rawLyricSize = json['lyricFontSize'];
     if (json.containsKey('lyricFontSize') &&
         !_validLyricFontSize(rawLyricSize)) {
@@ -678,6 +716,7 @@ class SettingsNotifier extends Notifier<AppSettings> {
       lyricViewBlurDisabled: rawLyricBlurDisabled as bool?,
       squareAlbumCoverEnabled: rawSquareCover as bool?,
       lyricFontWeight: syncedLyricWeight,
+      lyricTranslationFontWeight: syncedTranslationWeight,
       lyricFontSize: syncedLyricSize,
       lyricTranslationFontSize: syncedTranslationSize,
     );
@@ -694,6 +733,18 @@ class SettingsNotifier extends Notifier<AppSettings> {
     }
     if (rawSquareCover != null) {
       await _prefs.setBool(_kSquareAlbumCoverEnabledKey, rawSquareCover);
+    }
+    // Preserve the local translation weight when an old backup updates the original.
+    if (syncedTranslationWeight != null ||
+        (syncedLyricWeight != null &&
+            syncedLyricWeight != state.lyricFontWeight &&
+            !_validLyricFontWeight(
+              _prefs.get(_kLyricTranslationFontWeightKey),
+            ))) {
+      await _prefs.setDouble(
+        _kLyricTranslationFontWeightKey,
+        next.lyricTranslationFontWeight,
+      );
     }
     if (syncedLyricWeight != null) {
       await _prefs.setDouble(_kLyricFontWeightKey, syncedLyricWeight);

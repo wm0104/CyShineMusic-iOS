@@ -202,12 +202,14 @@ class ImmersivePlaylistHeader extends StatelessWidget {
     super.key,
     required this.artworkProvider,
     required this.topBar,
+    this.artwork,
     this.artworkLoading = false,
     this.artworkHeroTag,
   });
 
   final ImageProvider<Object>? artworkProvider;
   final Widget topBar;
+  final Widget? artwork;
   final bool artworkLoading;
   final Object? artworkHeroTag;
 
@@ -216,10 +218,12 @@ class ImmersivePlaylistHeader extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final screen = MediaQuery.sizeOf(context);
     final height = (screen.height * 0.4).clamp(320.0, 460.0);
-    final artwork = PlaylistArtworkImage(
-      provider: artworkProvider,
-      loading: artworkLoading,
-    );
+    final artwork =
+        this.artwork ??
+        PlaylistArtworkImage(
+          provider: artworkProvider,
+          loading: artworkLoading,
+        );
     // scrim 与顶栏既叠在头图上，也随封面 Hero 的 shuttle 一起飞行（落地前
     // 淡入），飞行结束时不会突然出现。同一组 widget 会同时出现在两棵子树
     // 里，所以 [topBar] 不能带 GlobalKey。
@@ -452,8 +456,9 @@ class ImmersivePlaylistTopBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final top = MediaQuery.viewPaddingOf(context).top;
-    final scheme = Theme.of(context).colorScheme;
-    final foreground = onImage ? Colors.white : scheme.onSurface;
+    final theme = Theme.of(context);
+    final textStyle = theme.textTheme.bodyMedium;
+    final foreground = onImage ? Colors.white : theme.colorScheme.onSurface;
     return IconTheme(
       data: IconThemeData(color: foreground),
       child: DefaultTextStyle(
@@ -461,6 +466,8 @@ class ImmersivePlaylistTopBar extends StatelessWidget {
           color: foreground,
           fontSize: 17,
           fontWeight: FontWeight.w600,
+          fontFamily: textStyle?.fontFamily,
+          fontFamilyFallback: textStyle?.fontFamilyFallback,
           shadows: onImage
               ? const [Shadow(color: Color(0x85000000), blurRadius: 8)]
               : null,
@@ -533,18 +540,18 @@ class PlaylistArtworkImage extends StatelessWidget {
     super.key,
     required this.provider,
     required this.loading,
+    this.placeholder = const CoverUnavailablePlaceholder(iconSize: 56),
   });
 
   final ImageProvider<Object>? provider;
   final bool loading;
+  final Widget placeholder;
 
   @override
   Widget build(BuildContext context) {
     final provider = this.provider;
     if (provider == null) {
-      return loading
-          ? const CoverLoadingSkeleton()
-          : const CoverUnavailablePlaceholder(iconSize: 56);
+      return loading ? const CoverLoadingSkeleton() : placeholder;
     }
     return Image(
       image: provider,
@@ -566,8 +573,7 @@ class PlaylistArtworkImage extends StatelessWidget {
           ],
         );
       },
-      errorBuilder: (_, _, _) =>
-          const CoverUnavailablePlaceholder(iconSize: 56),
+      errorBuilder: (_, _, _) => placeholder,
     );
   }
 }

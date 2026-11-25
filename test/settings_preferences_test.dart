@@ -69,19 +69,26 @@ void main() {
   });
 
   test(
-    'translation size migrates and persists independently of originals',
+    'translation style migrates and persists independently of originals',
     () async {
-      SharedPreferences.setMockInitialValues({'lyric_font_size': 48.0});
+      SharedPreferences.setMockInitialValues({
+        'lyric_font_size': 48.0,
+        'lyric_font_weight': 800.0,
+      });
       final prefs = await SharedPreferences.getInstance();
       final container = _settingsContainer(prefs);
       final notifier = container.read(settingsProvider.notifier);
       expect(container.read(settingsProvider).lyricTranslationFontSize, 21);
+      expect(container.read(settingsProvider).lyricFontWeight, 800);
+      expect(container.read(settingsProvider).lyricTranslationFontWeight, 700);
 
       final legacyAppearance = notifier.exportAppearanceForSync()
-        ..remove('lyricTranslationFontSize');
+        ..remove('lyricTranslationFontSize')
+        ..remove('lyricTranslationFontWeight');
       await notifier.applyAppearanceFromSync({
         ...legacyAppearance,
         'lyricFontSize': 40,
+        'lyricFontWeight': 200,
       });
       container.dispose();
 
@@ -89,15 +96,23 @@ void main() {
       final restoredNotifier = restored.read(settingsProvider.notifier);
       expect(restored.read(settingsProvider).lyricFontSize, 40);
       expect(restored.read(settingsProvider).lyricTranslationFontSize, 21);
+      expect(restored.read(settingsProvider).lyricFontWeight, 200);
+      expect(restored.read(settingsProvider).lyricTranslationFontWeight, 700);
 
       await restoredNotifier.applyAppearanceFromSync({
         ...legacyAppearance,
         'lyricTranslationFontSize': 30,
+        'lyricTranslationFontWeight': 900,
       });
       await restoredNotifier.setLyricFontStyle(weight: 500, size: 32);
       expect(
         restoredNotifier.exportAppearanceForSync()['lyricTranslationFontSize'],
         30,
+      );
+      expect(
+        restoredNotifier
+            .exportAppearanceForSync()['lyricTranslationFontWeight'],
+        900,
       );
       restored.dispose();
 
@@ -105,10 +120,12 @@ void main() {
       addTearDown(reloaded.dispose);
       expect(reloaded.read(settingsProvider).lyricFontSize, 32);
       expect(reloaded.read(settingsProvider).lyricTranslationFontSize, 30);
+      expect(reloaded.read(settingsProvider).lyricFontWeight, 500);
+      expect(reloaded.read(settingsProvider).lyricTranslationFontWeight, 900);
     },
   );
 
-  testWidgets('lyric settings preview and save both sizes independently', (
+  testWidgets('lyric settings preview, save and reset independent styles', (
     tester,
   ) async {
     await tester.binding.setSurfaceSize(const Size(430, 900));
@@ -126,43 +143,92 @@ void main() {
 
     final playerRow = find.byKey(const ValueKey('player-interface-setting'));
     await tester.ensureVisible(playerRow);
-      await tester.pumpAndSettle();
+    await tester.pumpAndSettle();
     await tester.tap(playerRow);
     await tester.pumpAndSettle();
     final lyricRow = find.byKey(const ValueKey('lyric-interface-setting'));
     await tester.tap(lyricRow);
     await tester.pumpAndSettle();
 
-    double? previewSize(String sample) =>
-        tester.widget<Text>(find.text(sample)).style?.fontSize;
-    expect(previewSize('Hear what you love'), 32);
-    expect(previewSize('听见热爱'), 14);
+    final weightLabels = find.text('字体粗细');
+    expect(weightLabels, findsNWidgets(2));
+    final positions = [
+      tester.getTopLeft(find.text('原歌词大小')).dy,
+      tester.getTopLeft(weightLabels.first).dy,
+      tester.getTopLeft(find.text('译文大小')).dy,
+      tester.getTopLeft(weightLabels.last).dy,
+    ];
+    expect(positions, [...positions]..sort());
+
+    TextStyle previewStyle(String sample) =>
+        tester.widget<Text>(find.text(sample)).style!;
+    const original = 'Hear what you love';
+    const translation = '听见热爱';
+    expect(previewStyle(original).fontSize, 32);
+    expect(previewStyle(translation).fontSize, 14);
+    expect(previewStyle(original).fontWeight, FontWeight.w500);
+    expect(previewStyle(translation).fontWeight, FontWeight.w400);
 
     final originalIncrease = find.byTooltip('增大原歌词大小');
     await tester.ensureVisible(originalIncrease);
-      await tester.pumpAndSettle();
+    await tester.pumpAndSettle();
     await tester.tap(originalIncrease);
     await tester.pumpAndSettle();
-    expect(previewSize('Hear what you love'), 33);
-    expect(previewSize('听见热爱'), 14);
+    expect(previewStyle(original).fontSize, 33);
+    expect(previewStyle(translation).fontSize, 14);
 
-    final translationField = find.byType(TextField).last;
-    await tester.ensureVisible(translationField);
-      await tester.pumpAndSettle();
-    await tester.enterText(translationField, '27');
+    final originalWeightIncrease = find.byTooltip('增大字体粗细').first;
+    await tester.ensureVisible(originalWeightIncrease);
     await tester.pumpAndSettle();
-    expect(previewSize('Hear what you love'), 33);
-    expect(previewSize('听见热爱'), 27);
+    await tester.tap(originalWeightIncrease);
+    await tester.pumpAndSettle();
+    expect(previewStyle(original).fontWeight, FontWeight.w600);
+    expect(previewStyle(translation).fontWeight, FontWeight.w400);
+
+    Finder styleField(String label) => find.descendant(
+      of: find.byWidgetPredicate(
+        (widget) => widget is Semantics && widget.properties.label == label,
+      ),
+      matching: find.byType(TextField),
+    );
+    final translationSize = styleField('译文大小');
+    await tester.ensureVisible(translationSize);
+    await tester.pumpAndSettle();
+    await tester.enterText(translationSize, '27');
+    await tester.pumpAndSettle();
+    expect(previewStyle(original).fontSize, 33);
+    expect(previewStyle(translation).fontSize, 27);
+
+    final translationWeight = styleField('字体粗细').last;
+    await tester.ensureVisible(translationWeight);
+    await tester.pumpAndSettle();
+    await tester.enterText(translationWeight, '800');
+    await tester.pumpAndSettle();
+    expect(previewStyle(original).fontWeight, FontWeight.w600);
+    expect(previewStyle(translation).fontWeight, FontWeight.w800);
 
     await tester.tap(find.widgetWithText(FilledButton, '完成').last);
     await tester.pumpAndSettle();
     expect(container.read(settingsProvider).lyricFontSize, 33);
     expect(container.read(settingsProvider).lyricTranslationFontSize, 27);
+    expect(container.read(settingsProvider).lyricFontWeight, 600);
+    expect(container.read(settingsProvider).lyricTranslationFontWeight, 800);
+
+    await tester.tap(lyricRow);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('重置'));
+    await tester.pumpAndSettle();
+    expect(previewStyle(original).fontWeight, FontWeight.w500);
+    expect(previewStyle(translation).fontWeight, FontWeight.w400);
+    await tester.tap(find.widgetWithText(FilledButton, '完成').last);
+    await tester.pumpAndSettle();
+    expect(container.read(settingsProvider).lyricFontWeight, 500);
+    expect(container.read(settingsProvider).lyricTranslationFontWeight, 400);
     expect(tester.takeException(), isNull);
   });
 
   testWidgets(
-    'full lyrics render translation size independently of original and roman',
+    'full lyrics render translation style independently of original and roman',
     (tester) async {
       final prefs = await SharedPreferences.getInstance();
       final container = _settingsContainer(prefs);
@@ -205,15 +271,23 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      double? renderedSize(String lyric) =>
-          DefaultTextStyle.of(tester.element(find.text(lyric))).style.fontSize;
+      TextStyle renderedStyle(String lyric) =>
+          DefaultTextStyle.of(tester.element(find.text(lyric))).style;
       await container
           .read(settingsProvider.notifier)
-          .setLyricFontStyle(weight: 500, size: 32, translationSize: 30);
+          .setLyricFontStyle(
+            weight: 700,
+            size: 32,
+            translationWeight: 900,
+            translationSize: 30,
+          );
       await tester.pumpAndSettle();
-      expect(renderedSize('Original lyric'), 32);
-      expect(renderedSize('中文译文'), 30);
-      expect(renderedSize('zhong wen yi wen'), 12);
+      expect(renderedStyle('Original lyric').fontSize, 32);
+      expect(renderedStyle('中文译文').fontSize, 30);
+      expect(renderedStyle('zhong wen yi wen').fontSize, 12);
+      expect(renderedStyle('Original lyric').fontWeight, FontWeight.w700);
+      expect(renderedStyle('中文译文').fontWeight, FontWeight.w900);
+      expect(renderedStyle('zhong wen yi wen').fontWeight, FontWeight.w600);
     },
   );
 

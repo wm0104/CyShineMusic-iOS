@@ -67,6 +67,7 @@ class PlaylistTrack {
     this.musicJson,
     this.spotify,
     this.spotifyMatchIsManual = false,
+    this.playlistEntryKey,
   });
 
   final String musicId;
@@ -81,6 +82,7 @@ class PlaylistTrack {
 
   final SpotifyTrackMetadata? spotify;
   final bool spotifyMatchIsManual;
+  final String? playlistEntryKey;
   bool get isUnmatchedSpotify => spotify != null && musicInfo == null;
   String get sourceLabel => isUnmatchedSpotify ? '未匹配音源' : source.label;
 
@@ -108,24 +110,38 @@ class PlaylistTrack {
     }
   }
 
-  String get identityKey {
+  String get identityKey => playlistEntryKey ?? canonicalIdentityKey;
+
+  String get canonicalIdentityKey {
     final origin = spotify;
     if (origin != null) return 'spotify:${origin.uri}:${origin.occurrence}';
+    final providerKey = providerIdentityKey;
+    if (providerKey != null) return providerKey;
+
+    final fileKey = localFileIdentityKey;
+    if (fileKey != null) return fileKey;
+
+    return 'fallback:${sourceCode.trim().toLowerCase()}:${musicId.trim()}:'
+        '${name.trim().toLowerCase()}:${singer.trim().toLowerCase()}';
+  }
+
+  String? get localFileIdentityKey {
+    final path = localPath?.trim();
+    return path == null || path.isEmpty
+        ? null
+        : 'file:${normalizePlaylistPath(path)}';
+  }
+
+  String? get providerIdentityKey {
     final normalizedSource = sourceCode.trim().toLowerCase();
     final normalizedMusicId = musicId.trim();
-    if (normalizedMusicId.isNotEmpty &&
-        normalizedSource.isNotEmpty &&
-        normalizedSource != MusicSource.all.code) {
-      return 'music:$normalizedSource:$normalizedMusicId';
+    if (normalizedMusicId.isEmpty ||
+        normalizedSource.isEmpty ||
+        normalizedSource == MusicSource.all.code ||
+        isUnmatchedSpotify) {
+      return null;
     }
-
-    final path = localPath?.trim();
-    if (path != null && path.isNotEmpty) {
-      return 'file:${normalizePlaylistPath(path)}';
-    }
-
-    return 'fallback:$normalizedSource:$normalizedMusicId:'
-        '${name.trim().toLowerCase()}:${singer.trim().toLowerCase()}';
+    return 'music:$normalizedSource:$normalizedMusicId';
   }
 
   factory PlaylistTrack.fromDownloadHistory(DownloadHistoryEntry entry) {
@@ -177,7 +193,11 @@ class PlaylistTrack {
   }
 
   PlaylistTrack withSpotifyMatch(MusicInfo music) => mergePreferLocal(
-    PlaylistTrack.fromSpotify(spotify!, music, manual: true),
+    PlaylistTrack.fromSpotify(
+      spotify!,
+      music,
+      manual: true,
+    ).copyWith(playlistEntryKey: playlistEntryKey),
   );
 
   PlaylistTrack? spotifyMatchReplacement({
@@ -221,7 +241,9 @@ class PlaylistTrack {
     String? picUrl,
     Map<String, dynamic>? musicJson,
     SpotifyTrackMetadata? spotify,
+    String? playlistEntryKey,
   }) {
+    final entryKey = playlistEntryKey ?? this.playlistEntryKey;
     return PlaylistTrack(
       musicId: musicId ?? this.musicId,
       name: name ?? this.name,
@@ -234,6 +256,7 @@ class PlaylistTrack {
       musicJson: musicJson ?? this.musicJson,
       spotify: spotify ?? this.spotify,
       spotifyMatchIsManual: spotifyMatchIsManual,
+      playlistEntryKey: entryKey == canonicalIdentityKey ? null : entryKey,
     );
   }
 
@@ -272,6 +295,7 @@ class PlaylistTrack {
       picUrl: picUrl,
       spotify: spotify,
       spotifyMatchIsManual: spotifyMatchIsManual,
+      playlistEntryKey: playlistEntryKey,
       musicJson: musicJson == null
           ? null
           : Map<String, dynamic>.from(musicJson!),
@@ -339,12 +363,14 @@ class PlaylistTrack {
     if (musicJson != null) 'musicInfo': musicJson,
     if (spotify != null) 'spotify': spotify!.toJson(),
     if (spotifyMatchIsManual) 'spotifyMatchIsManual': true,
+    if (playlistEntryKey != null) 'playlistEntryKey': playlistEntryKey,
   };
 
   static PlaylistTrack? tryFromJson(Object? value) {
     final json = _mapOrNull(value);
     if (json == null) return null;
 
+    final spotify = SpotifyTrackMetadata.tryFromJson(json['spotify']);
     final track = PlaylistTrack(
       musicId: _string(json['musicId'] ?? json['id']),
       name: _string(json['name']),
@@ -355,8 +381,11 @@ class PlaylistTrack {
       localPath: _nonEmpty(_stringOrNull(json['localPath'] ?? json['path'])),
       picUrl: _nonEmpty(_stringOrNull(json['picUrl'])),
       musicJson: _mapOrNull(json['musicInfo']),
-      spotify: SpotifyTrackMetadata.tryFromJson(json['spotify']),
+      spotify: spotify,
       spotifyMatchIsManual: json['spotifyMatchIsManual'] == true,
+      playlistEntryKey: spotify == null
+          ? null
+          : _nonEmpty(_stringOrNull(json['playlistEntryKey'])),
     );
 
     if (track.name.trim().isEmpty && !track.isLocal) return null;
@@ -380,6 +409,8 @@ class LocalPlaylist {
     this.originPlaylistId,
     this.originSourceCode,
     this.onlineTrackIds,
+    this.movedOutTrackIds,
+    this.movedOutTrackProviders,
     this.customTrackOrder,
     this.originTrackCount,
     this.originPreviewCount,
@@ -396,6 +427,8 @@ class LocalPlaylist {
   final String? originPlaylistId;
   final String? originSourceCode;
   final List<String>? onlineTrackIds;
+  final List<String>? movedOutTrackIds;
+  final Map<String, String?>? movedOutTrackProviders;
   final List<String>? customTrackOrder;
   final int? originTrackCount;
   final int? originPreviewCount;
@@ -431,6 +464,8 @@ class LocalPlaylist {
     List<PlaylistTrack>? tracks,
     DateTime? updatedAt,
     List<String>? onlineTrackIds,
+    List<String>? movedOutTrackIds,
+    Map<String, String?>? movedOutTrackProviders,
     List<String>? customTrackOrder,
   }) {
     return LocalPlaylist(
@@ -442,6 +477,12 @@ class LocalPlaylist {
       originPlaylistId: originPlaylistId,
       originSourceCode: originSourceCode,
       onlineTrackIds: onlineTrackIds ?? this.onlineTrackIds,
+      movedOutTrackIds: movedOutTrackIds == null
+          ? this.movedOutTrackIds
+          : List<String>.unmodifiable(movedOutTrackIds),
+      movedOutTrackProviders: movedOutTrackProviders == null
+          ? this.movedOutTrackProviders
+          : Map<String, String?>.unmodifiable(movedOutTrackProviders),
       customTrackOrder: _customOrderForTracks(
         customTrackOrder ?? this.customTrackOrder,
         tracks ?? this.tracks,
@@ -464,6 +505,9 @@ class LocalPlaylist {
     if (originPlaylistId != null) 'originPlaylistId': originPlaylistId,
     if (originSourceCode != null) 'originSource': originSourceCode,
     if (onlineTrackIds != null) 'onlineTrackIds': onlineTrackIds,
+    if (movedOutTrackIds != null) 'movedOutTrackIds': movedOutTrackIds,
+    if (movedOutTrackProviders?.isNotEmpty ?? false)
+      'movedOutTrackProviders': movedOutTrackProviders,
     if (customTrackOrder != null) 'customTrackOrder': customTrackOrder,
     if (originTrackCount != null) 'originTrackCount': originTrackCount,
     if (originPreviewCount != null) 'originPreviewCount': originPreviewCount,
@@ -492,6 +536,7 @@ class LocalPlaylist {
 
     final createdAt = _dateTime(json['createdAt']);
     final updatedAt = _dateTime(json['updatedAt']) ?? createdAt;
+    final movedOutProviders = _mapOrNull(json['movedOutTrackProviders']);
     return LocalPlaylist(
       id: id,
       name: name,
@@ -504,6 +549,14 @@ class LocalPlaylist {
         _stringOrNull(json['originSource'] ?? json['originSourceCode']),
       ),
       onlineTrackIds: _stringListOrNull(json['onlineTrackIds']),
+      movedOutTrackIds: _stringListOrNull(json['movedOutTrackIds']),
+      movedOutTrackProviders: movedOutProviders == null
+          ? null
+          : Map<String, String?>.unmodifiable({
+              for (final entry in movedOutProviders.entries)
+                if (entry.value == null || entry.value is String)
+                  entry.key: entry.value as String?,
+            }),
       customTrackOrder: _customOrderForTracks(
         _stringListOrNull(json['customTrackOrder']),
         tracks,

@@ -7,6 +7,7 @@ import '../../../theme/app_motion.dart';
 import '../../downloads/download_progress.dart';
 import '../resolved_playlist_track.dart';
 import 'playlist_artwork.dart';
+import 'playlist_order_controls.dart';
 
 const double _trackCoverSize = 52;
 const double _trackRowMinHeight = 68;
@@ -27,6 +28,8 @@ class PlaylistTrackTile extends ConsumerWidget {
     required this.onDownload,
     required this.onRemove,
     this.onMatch,
+    this.onAddToPlaylist,
+    this.onMoveToPlaylist,
     this.reordering = false,
     this.reorderEnabled = true,
   });
@@ -43,6 +46,8 @@ class PlaylistTrackTile extends ConsumerWidget {
   final VoidCallback? onMatch;
   final VoidCallback? onDownload;
   final VoidCallback onRemove;
+  final VoidCallback? onAddToPlaylist;
+  final VoidCallback? onMoveToPlaylist;
   final bool reordering;
   final bool reorderEnabled;
 
@@ -59,7 +64,10 @@ class PlaylistTrackTile extends ConsumerWidget {
           );
     final isLocal = item.localEntry != null;
     final tapToMatch =
-        onMatch != null && item.track.isUnmatchedSpotify && !batchMode && !reordering;
+        onMatch != null &&
+        item.track.isUnmatchedSpotify &&
+        !batchMode &&
+        !reordering;
     final canReplace = onMatch != null && !item.track.isUnmatchedSpotify;
     final tapHint = tapToMatch ? '轻触匹配音源' : '轻触播放';
     final selectionEnabled = !batchSubmitting && task?.isBusy != true;
@@ -99,7 +107,9 @@ class PlaylistTrackTile extends ConsumerWidget {
               ? '轻触选择歌曲'
               : tapHint,
           child: InkWell(
-            onTap: reordering ? null : batchMode
+            onTap: reordering
+                ? null
+                : batchMode
                 ? (selectionEnabled ? onToggleSelected : null)
                 : (tapToMatch ? onMatch : onPlay),
             child: Padding(
@@ -204,17 +214,12 @@ class PlaylistTrackTile extends ConsumerWidget {
                         );
                       },
                       child: reordering
-                          ? ReorderableDragStartListener(
-                              key: ValueKey('playlist-reorder-${item.track.identityKey}'),
+                          ? PlaylistOrderDragHandle(
+                              key: ValueKey(
+                                'playlist-reorder-${item.track.identityKey}',
+                              ),
                               index: index,
                               enabled: reorderEnabled,
-                              child: const SizedBox.square(
-                                dimension: 44,
-                                child: Tooltip(
-                                  message: '拖动调整顺序',
-                                  child: Icon(Icons.drag_handle_rounded),
-                                ),
-                              ),
                             )
                           : batchMode
                           ? SizedBox.square(
@@ -271,8 +276,39 @@ class PlaylistTrackTile extends ConsumerWidget {
       enabled: !batchMode && !reordering,
       endActionPane: ActionPane(
         motion: const BehindMotion(),
-        extentRatio: canReplace ? 0.48 : 0.24,
+        extentRatio:
+            0.24 *
+            (1 +
+                (canReplace ? 1 : 0) +
+                (onAddToPlaylist == null ? 0 : 1) +
+                (onMoveToPlaylist == null ? 0 : 1)),
         children: [
+          if (onAddToPlaylist case final add?)
+            SlidableAction(
+              key: const ValueKey('playlist-add-to-playlist-action'),
+              autoClose: false,
+              onPressed: (actionContext) async {
+                await Slidable.of(actionContext)?.close();
+                add();
+              },
+              backgroundColor: scheme.secondaryContainer,
+              foregroundColor: scheme.onSecondaryContainer,
+              icon: Icons.playlist_add_rounded,
+              label: '添加到歌单',
+            ),
+          if (onMoveToPlaylist case final move?)
+            SlidableAction(
+              key: const ValueKey('playlist-move-to-playlist-action'),
+              autoClose: false,
+              onPressed: (actionContext) async {
+                await Slidable.of(actionContext)?.close();
+                move();
+              },
+              backgroundColor: scheme.tertiaryContainer,
+              foregroundColor: scheme.onTertiaryContainer,
+              icon: Icons.drive_file_move_rounded,
+              label: '移动到歌单',
+            ),
           if (canReplace)
             SlidableAction(
               onPressed: (_) => onMatch!(),

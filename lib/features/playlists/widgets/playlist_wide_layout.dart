@@ -57,6 +57,7 @@ class PlaylistWideInfoPane extends StatelessWidget {
     required this.artworkProvider,
     required this.title,
     required this.metadata,
+    this.artwork,
     this.artworkLoading = false,
     this.artworkHeroTag,
     this.description,
@@ -66,6 +67,7 @@ class PlaylistWideInfoPane extends StatelessWidget {
   });
 
   final ImageProvider<Object>? artworkProvider;
+  final Widget? artwork;
   final bool artworkLoading;
   final Object? artworkHeroTag;
   final String title;
@@ -82,10 +84,12 @@ class PlaylistWideInfoPane extends StatelessWidget {
     const radius = BorderRadius.all(Radius.circular(20));
     final artwork = AspectRatio(
       aspectRatio: 1,
-      child: PlaylistArtworkImage(
-        provider: artworkProvider,
-        loading: artworkLoading,
-      ),
+      child:
+          this.artwork ??
+          PlaylistArtworkImage(
+            provider: artworkProvider,
+            loading: artworkLoading,
+          ),
     );
     return SingleChildScrollView(
       key: const ValueKey('playlist-wide-info-pane'),

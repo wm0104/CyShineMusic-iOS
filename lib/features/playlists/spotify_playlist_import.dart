@@ -243,6 +243,7 @@ class SpotifyPlaylistImporter {
             if (match != null) {
               results[index] = PlaylistTrack.fromSpotify(track, match).copyWith(
                 localPath: original.localPath,
+                playlistEntryKey: original.playlistEntryKey,
               );
             }
             completedSearches++;
